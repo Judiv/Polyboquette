@@ -1,0 +1,8 @@
+# Environnements virtuels & Cache Python
+__pycache__/
+*.pyc
+venv/
+
+# Fichiers sensibles et DB locales
+.env
+app/data/
