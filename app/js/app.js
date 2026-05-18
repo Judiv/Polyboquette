@@ -10,15 +10,18 @@ const state = {
             user1: { id: 'user1', username: 'jean', password: '123', name: 'Jean Dupont', role: 'user', status: 'active', points: 1000, buque: 'Bab', nums: '123', proms: 'An211' },
         },
         markets: [],
+        categories: [],
         proposals: [] // <-- NOUVEAU
     },
+    editMode: false,
     currentView: 'dashboard',
     currentMarketId: null,
     selectedOptionId: null,
     chartHidden: false,
     leaderboard: [],
     canClaim: false,
-    dashTab: 'markets'   // 'markets' | 'leaderboard'
+    dashTab: 'markets',   // 'markets' | 'leaderboard'
+    collapsedCategories: JSON.parse(localStorage.getItem('collapsedCategories') || '{}')
 };
 
 const PALETTE = ['#22c55e', '#ef4444', '#3b82f6', '#d946ef', '#f97316', '#eab308', '#06b6d4'];
@@ -158,12 +161,15 @@ function addLocalTx(user, desc, amount) {
 async function refreshServerData() {
     if(!state.useApi) return;
     const marketsRes = state.currentUser ? fetch('/api/markets').catch(()=>null) : Promise.resolve(null);
-    const [mRes, pRes, lbRes] = await Promise.all([
+    const catRes = state.currentUser ? fetch('/api/categories').catch(()=>null) : Promise.resolve(null);
+    const [mRes, cRes, pRes, lbRes] = await Promise.all([
         marketsRes,
+        catRes,
         state.currentUser ? fetch('/api/proposals').catch(()=>null) : Promise.resolve(null),
         fetch('/api/leaderboard').catch(()=>null)
     ]);
     if(mRes && mRes.ok) state.data.markets = await mRes.json();
+    if(cRes && cRes.ok) state.data.categories = await cRes.json();
     if(pRes && pRes.ok) state.data.proposals = await pRes.json();
     if(lbRes && lbRes.ok) state.leaderboard = await lbRes.json();
 
@@ -232,22 +238,29 @@ const app = {
         container.innerHTML = '<div style="text-align:center; padding: 2rem;"><i class="fa-solid fa-spinner fa-spin fa-2x"></i></div>'; 
         
         if(state.useApi) await refreshServerData();
+        
+        app.renderCurrentView(isNewMarket);
+    },
 
-        if (view === 'dashboard') container.innerHTML = renderDashboard();
-        else if (view === 'market') {
-            const market = state.data.markets.find(m => m.id === id);
+    renderCurrentView: (isNewMarket = false) => {
+        const container = document.getElementById('app-container');
+        if(!container) return;
+        
+        if (state.currentView === 'dashboard') container.innerHTML = renderDashboard();
+        else if (state.currentView === 'market') {
+            const market = state.data.markets.find(m => m.id === state.currentMarketId);
             if(!market) return container.innerHTML = '<p>Introuvable</p>';
             if (isNewMarket) {
                 state.selectedOptionId = market.options[0].id;
             }
-            container.innerHTML = renderMarket(id);
-            setTimeout(() => initChart(id), 10);
+            container.innerHTML = renderMarket(state.currentMarketId);
+            setTimeout(() => initChart(state.currentMarketId), 10);
         }
-        else if (view === 'admin') container.innerHTML = renderAdmin();
-        else if (view === 'login') container.innerHTML = renderLogin();
-        else if (view === 'register') container.innerHTML = renderRegister();
-        else if (view === 'proposals') container.innerHTML = renderProposals();
-        else if (view === 'profile') container.innerHTML = renderProfile();
+        else if (state.currentView === 'admin') container.innerHTML = renderAdmin();
+        else if (state.currentView === 'login') container.innerHTML = renderLogin();
+        else if (state.currentView === 'register') container.innerHTML = renderRegister();
+        else if (state.currentView === 'proposals') container.innerHTML = renderProposals();
+        else if (state.currentView === 'profile') container.innerHTML = renderProfile();
     },
 
     selectOption: (optId) => {
@@ -324,7 +337,17 @@ const app = {
                 });
             }
             market.history.push({ time: now_iso, ...probs });
-            addLocalTx(state.currentUser, `Mise dans '${market.title}'`, -amount);
+            addLocalTx(state.currentUser, `Mise dans '${market.title}' (${option.label})`, -amount);
+            if (!market.actionLog) market.actionLog = [];
+            market.actionLog.push({
+                time: now_iso,
+                userId: state.currentUser.id,
+                userName: state.currentUser.name,
+                type: 'bet',
+                amount: amount,
+                optId: optId,
+                optLabel: option.label
+            });
             state.data.users[state.currentUser.id].points = state.currentUser.points;
             saveDataLocal();
             ui.showToast("Mise effectuée avec succès !");
@@ -367,13 +390,26 @@ const app = {
             const newProbs = getProbabilities(market);
             market.history.push({ time: new Date().toISOString(), ...newProbs });
 
-            if (sellAmt >= bet.amount) {
+            const originalBetAmount = bet.amount;
+            if (sellAmt >= originalBetAmount) {
                 market.bets.splice(betIndex, 1);
             } else {
                 bet.amount -= sellAmt;
             }
 
-            addLocalTx(state.currentUser, `Revente dans '${market.title}'`, refund);
+            if (!market.actionLog) market.actionLog = [];
+            market.actionLog.push({
+                time: new Date().toISOString(),
+                userId: state.currentUser.id,
+                userName: state.currentUser.name,
+                type: 'cashout',
+                amount: sellAmt,
+                cashoutVal: refund,
+                optId: bet.optId,
+                optLabel: opt.label
+            });
+
+            addLocalTx(state.currentUser, `Revente ${sellAmt < originalBetAmount ? '(partielle) ' : ''}'${market.title}' (${opt.label})`, refund);
             state.data.users[state.currentUser.id].points = state.currentUser.points;
             saveDataLocal();
             ui.showToast(`Revente effectuée : +${refund} points.`);
@@ -566,7 +602,126 @@ const app = {
         app.navigate('admin');
     },
 
-    createMarketDirect: () => {
+    adminCreateCategory: () => {
+        ui.showModal(
+            "<i class='fa-solid fa-folder-plus'></i> Nouvelle Catégorie",
+            `
+            <label style="display:block; margin-bottom:0.5rem; font-weight:500;">Nom de la catégorie</label>
+            <input type="text" id="modalCatName" style="width:100%; padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);" placeholder="Ex: Politique">
+            `,
+            async () => {
+                const name = document.getElementById('modalCatName').value.trim();
+                if(!name) return ui.showToast("Nom requis", "error");
+                
+                if (state.useApi) {
+                    try {
+                        await apiCall('POST', '/api/admin/categories', {action: 'create', name});
+                        ui.showToast("Catégorie créée");
+                        await refreshServerData();
+                    } catch(e) {
+                        return ui.showToast(e.message, 'error');
+                    }
+                } else {
+                    state.data.categories.push({
+                        id: 'cat_' + Date.now(),
+                        name: name,
+                        order: state.data.categories.length
+                    });
+                    saveDataLocal();
+                    ui.showToast("Catégorie créée");
+                }
+                ui.closeModal(true);
+                app.navigate('dashboard');
+            },
+            "Créer"
+        );
+    },
+
+    adminDeleteCategory: (catId) => {
+        if(!confirm("Supprimer cette catégorie ? Les paris retourneront dans 'Autres paris'.")) return;
+        
+        if (state.useApi) {
+            apiCall('POST', '/api/admin/categories', {action: 'delete', id: catId})
+                .then(async () => {
+                    ui.showToast("Catégorie supprimée");
+                    await refreshServerData();
+                    app.navigate('dashboard');
+                })
+                .catch(e => ui.showToast(e.message, 'error'));
+        } else {
+            state.data.categories = state.data.categories.filter(c => c.id !== catId);
+            state.data.markets.forEach(m => {
+                if(m.categoryId === catId) m.categoryId = null;
+            });
+            saveDataLocal();
+            ui.showToast("Catégorie supprimée");
+            app.navigate('dashboard');
+        }
+    },
+
+    saveReorder: async () => {
+        const catContainer = document.getElementById('categories-container');
+        if (!catContainer) return;
+        
+        const catNodes = Array.from(catContainer.children).filter(c => c.classList.contains('category-container'));
+        const newCategories = [];
+        const newMarkets = [];
+        
+        catNodes.forEach((node, i) => {
+            const catId = node.getAttribute('data-cat-id');
+            if (catId !== 'uncategorized') {
+                newCategories.push({id: catId, order: i});
+            }
+            
+            const list = node.querySelector('.market-list');
+            if (list) {
+                Array.from(list.children).forEach((mNode, j) => {
+                    if (mNode.classList.contains('market-card')) {
+                        const mId = mNode.getAttribute('data-id');
+                        newMarkets.push({
+                            id: mId,
+                            categoryId: catId === 'uncategorized' ? null : catId,
+                            order: j
+                        });
+                    }
+                });
+            }
+        });
+        
+        if (state.useApi) {
+            try {
+                await apiCall('POST', '/api/admin/markets/reorder', {categories: newCategories, markets: newMarkets});
+                newCategories.forEach(nc => {
+                    const c = state.data.categories.find(x => x.id === nc.id);
+                    if(c) c.order = nc.order;
+                });
+                newMarkets.forEach(nm => {
+                    const m = state.data.markets.find(x => x.id === nm.id);
+                    if(m) {
+                        m.categoryId = nm.categoryId;
+                        m.order = nm.order;
+                    }
+                });
+            } catch(e) {
+                ui.showToast("Erreur sauvegarde ordre", "error");
+            }
+        } else {
+            newCategories.forEach(nc => {
+                const c = state.data.categories.find(x => x.id === nc.id);
+                if(c) c.order = nc.order;
+            });
+            newMarkets.forEach(nm => {
+                const m = state.data.markets.find(x => x.id === nm.id);
+                if(m) {
+                    m.categoryId = nm.categoryId;
+                    m.order = nm.order;
+                }
+            });
+            saveDataLocal();
+        }
+    },
+
+    adminCreateMarket: (categoryId = null) => {
         ui.showModal(
             "<i class='fa-solid fa-square-plus'></i> Créer un marché officiel",
             `
@@ -590,7 +745,7 @@ const app = {
 
                 if (state.useApi) {
                     try {
-                        await apiCall('POST', '/api/admin/markets', { title, choices, image: imgIn });
+                        await apiCall('POST', '/api/admin/markets', { title, choices, image: imgIn, categoryId });
                         ui.showToast("Marché créé !");
                     } catch(e) {
                         return ui.showToast(e.message, 'error');
@@ -606,13 +761,14 @@ const app = {
                         id: 'm' + Date.now(), title: title, 
                         image: imgIn || 'https://images.unsplash.com/photo-1550565118-3a14e8d0386f?auto=format&fit=crop&w=150&q=80',
                         volume: 0, status: 'open', resolvedWinner: null, bets: [], options: options,
+                        categoryId: categoryId || null, order: 999,
                         history: [{ time: 'Début', ...initialProbs }]
                     });
                     saveDataLocal();
                     ui.showToast("Marché créé !");
                 }
                 ui.closeModal(true);
-                app.navigate('admin');
+                app.navigate('dashboard');
             },
             "Mettre en ligne"
         );
@@ -723,10 +879,10 @@ const app = {
             ui.showToast("Marché clôturé !");
         }
         ui.closeModal(true);
-        app.navigate('admin');
+        app.navigate('dashboard');
     },
 
-    resolveMarketPrompt: (marketId) => {
+    adminResolveMarket: (marketId) => {
         const market = state.data.markets.find(m => m.id === marketId);
         let opts = `<select id="modalResolveWinner" style="width:100%; padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary); margin-bottom:1rem;">
             <option value="cancelled">-- ANNULER (Remboursement Intégral) --</option>`;
@@ -744,18 +900,78 @@ const app = {
         );
     },
 
-    togglePause: async (marketId) => {
-        if(state.useApi) {
-            await apiCall('POST', `/api/admin/markets/${marketId}/toggle-pause`);
-        } else {
-            const market = state.data.markets.find(m => m.id === marketId);
-            market.status = market.status === 'paused' ? 'open' : 'paused';
-            saveDataLocal();
-        }
-        app.navigate('admin');
+    togglePauseModal: (marketId) => {
+        ui.showModal(
+            "<i class='fa-solid fa-pause'></i> Mettre en pause",
+            `
+            <label style="display:block; margin-bottom:0.5rem; font-weight:500;">Quand voulez-vous mettre en pause ce marché ?</label>
+            <div style="margin-bottom:1rem;">
+                <input type="radio" id="pauseNow" name="pauseTime" value="now" checked onchange="document.getElementById('pauseDateContainer').style.display='none'">
+                <label for="pauseNow">Immédiatement</label>
+            </div>
+            <div style="margin-bottom:1rem;">
+                <input type="radio" id="pauseLater" name="pauseTime" value="later" onchange="document.getElementById('pauseDateContainer').style.display='block'">
+                <label for="pauseLater">À une date/heure spécifique</label>
+            </div>
+            <div id="pauseDateContainer" style="display:none; margin-bottom:1rem;">
+                <input type="datetime-local" id="pauseAtDate" style="width:100%; padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
+            </div>
+            `,
+            async () => {
+                const choice = document.querySelector('input[name="pauseTime"]:checked').value;
+                let pauseAt = "now";
+                if (choice === "later") {
+                    const dt = document.getElementById('pauseAtDate').value;
+                    if(!dt) return ui.showToast("Date requise", "error");
+                    pauseAt = new Date(dt).toISOString();
+                }
+                
+                if(state.useApi) {
+                    try {
+                        await apiCall('POST', `/api/admin/markets/${marketId}/toggle-pause`, {pauseAt});
+                    } catch(e) {
+                        return ui.showToast(e.message, 'error');
+                    }
+                } else {
+                    const market = state.data.markets.find(m => m.id === marketId);
+                    if (pauseAt === "now") {
+                        market.status = 'paused';
+                        market.pauseAt = null;
+                    } else {
+                        market.pauseAt = pauseAt;
+                    }
+                    saveDataLocal();
+                }
+                ui.closeModal(true);
+                app.navigate('dashboard');
+                ui.showToast(pauseAt === "now" ? "Marché mis en pause" : "Mise en pause programmée");
+            },
+            "Valider"
+        );
     },
 
-    deleteMarket: async (marketId) => {
+    resumeMarket: async (marketId) => {
+        if(state.useApi) {
+            try {
+                // Sending 'resume' or any non-'now' that is not a date acts as unpause if it's currently paused, actually my backend sets pauseAt if status is open. Wait, backend logic:
+                // if m["status"] == "open": if pauseAt == "now", status=paused.
+                // if m["status"] == "paused": status=open, pauseAt=None.
+                // So calling toggle-pause on a paused market will just open it.
+                await apiCall('POST', `/api/admin/markets/${marketId}/toggle-pause`, {});
+            } catch(e) {
+                return ui.showToast(e.message, 'error');
+            }
+        } else {
+            const market = state.data.markets.find(m => m.id === marketId);
+            market.status = 'open';
+            market.pauseAt = null;
+            saveDataLocal();
+        }
+        app.navigate('dashboard');
+        ui.showToast("Marché repris");
+    },
+
+    adminDeleteMarket: async (marketId) => {
         if (!confirm("Voulez-vous vraiment supprimer ce marché définitivement ?")) return;
         if(state.useApi) {
             try {
@@ -769,7 +985,119 @@ const app = {
             saveDataLocal();
             ui.showToast("Marché supprimé.");
         }
-        app.navigate('admin');
+        app.navigate('dashboard');
+    },
+
+    handleAdminSearch: () => {
+        state.adminSearch = document.getElementById('adminSearchInput').value;
+        state.adminSortBy = document.getElementById('adminSortSelect').value;
+        app.renderCurrentView();
+        const inp = document.getElementById('adminSearchInput');
+        if(inp) { inp.focus(); inp.selectionStart = inp.selectionEnd = inp.value.length; }
+    },
+
+    handleAdminSort: () => {
+        state.adminSortBy = document.getElementById('adminSortSelect').value;
+        app.renderCurrentView();
+    },
+
+    toggleCategoryCollapse: (catId) => {
+        state.collapsedCategories[catId] = !state.collapsedCategories[catId];
+        localStorage.setItem('collapsedCategories', JSON.stringify(state.collapsedCategories));
+        app.renderCurrentView();
+    },
+
+    togglePinMarket: async (marketId) => {
+        if (!state.currentUser) return ui.showToast("Vous devez être connecté", "error");
+        if (state.useApi) {
+            try {
+                const res = await apiCall('POST', '/api/users/pin-market', {marketId});
+                state.currentUser = res.user;
+                app.renderCurrentView();
+                ui.showToast(res.pinned ? "Pari épinglé" : "Pari désépinglé");
+            } catch(e) {
+                return ui.showToast(e.message, 'error');
+            }
+        } else {
+            if (!state.currentUser.pinnedMarkets) state.currentUser.pinnedMarkets = [];
+            let pinned = false;
+            const idx = state.currentUser.pinnedMarkets.indexOf(marketId);
+            if (idx === -1) {
+                state.currentUser.pinnedMarkets.push(marketId);
+                pinned = true;
+            } else {
+                state.currentUser.pinnedMarkets.splice(idx, 1);
+            }
+            state.data.users[state.currentUser.id].pinnedMarkets = state.currentUser.pinnedMarkets;
+            saveDataLocal();
+            app.renderCurrentView();
+            ui.showToast(pinned ? "Pari épinglé" : "Pari désépinglé");
+        }
+    },
+
+    postComment: async (marketId) => {
+        const input = document.getElementById('commentInput');
+        if (!input) return;
+        const text = input.value.trim();
+        if (!text) return ui.showToast("Commentaire vide", "error");
+        
+        if (state.useApi) {
+            try {
+                await apiCall('POST', `/api/markets/${marketId}/comments`, {text});
+                await refreshServerData();
+            } catch(e) {
+                return ui.showToast(e.message, 'error');
+            }
+        } else {
+            const m = state.data.markets.find(x => x.id === marketId);
+            if (!m.comments) m.comments = [];
+            m.comments.push({
+                id: 'c' + Date.now(),
+                userId: state.currentUser.id,
+                userName: state.currentUser.name,
+                text: text,
+                time: new Date().toISOString()
+            });
+            saveDataLocal();
+        }
+        input.value = '';
+        app.navigate('market', marketId);
+    },
+
+    viewMarketHistory: (marketId) => {
+        const m = state.data.markets.find(x => x.id === marketId);
+        if(!m) return;
+        let html = '';
+        const logs = m.actionLog || [];
+        if(logs.length === 0) {
+            html = '<p style="color:var(--text-secondary)">Aucun historique disponible pour ce marché.</p>';
+        } else {
+            html += '<div style="max-height:400px; overflow-y:auto; display:flex; flex-direction:column; gap:0.5rem;">';
+            // Order chronologique -> reverse so newest is on top? Actually chronological means oldest first, but maybe newest first is better? 
+            // The user said "dans l'ordre chronologique", which means oldest to newest. Let's do oldest to newest.
+            logs.forEach(log => {
+                const dateStr = new Date(log.time).toLocaleString();
+                let desc = '';
+                if(log.type === 'bet') {
+                    desc = `<span style="color:var(--yes-color); font-weight:bold;">Mise</span> de <strong>${log.amount} pts</strong> sur l'option <em>${log.optLabel}</em>`;
+                } else if(log.type === 'cashout') {
+                    desc = `<span style="color:var(--error-color); font-weight:bold;">Revente</span> de <strong>${log.amount} pts</strong> sur l'option <em>${log.optLabel}</em> (Gain: ${log.cashoutVal} pts)`;
+                } else {
+                    desc = log.type;
+                }
+                html += `
+                    <div style="padding:0.75rem; border-radius:var(--radius-sm); border:1px solid var(--border-color); background:var(--bg-secondary);">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.4rem;">
+                            <strong style="color:var(--text-primary)">${log.userName}</strong>
+                            <span>${dateStr}</span>
+                        </div>
+                        <div style="font-size:0.95rem;">${desc}</div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+        }
+        ui.showModal(`Historique: ${m.title}`, html, () => ui.closeModal(true), "Fermer");
     },
 
     changePassword: async () => {
@@ -977,8 +1305,28 @@ function updateNavbar() {
             btn.id = 'adminBtn';
             btn.className = 'btn-primary';
             btn.innerHTML = '<i class="fa-solid fa-shield-halved"></i> Admin';
-            btn.onclick = () => app.navigate('admin');
+            btn.onclick = () => { state.editMode = false; app.navigate('admin'); };
             document.querySelector('.nav-actions').insertBefore(btn, document.getElementById('authActions'));
+        }
+        
+        let editBtn = document.getElementById('editBtn');
+        if (state.currentUser.role === 'admin') {
+            if (!editBtn) {
+                const btn = document.createElement('button');
+                btn.id = 'editBtn';
+                btn.className = 'btn-outline';
+                btn.style.borderColor = 'var(--accent-color)';
+                btn.style.color = 'var(--accent-color)';
+                btn.innerHTML = state.editMode ? '<i class="fa-solid fa-check"></i> Quitter Édition' : '<i class="fa-solid fa-pen-to-square"></i> Mode Édition';
+                btn.onclick = () => {
+                    state.editMode = !state.editMode;
+                    updateNavbar();
+                    if(state.currentView === 'dashboard') app.navigate('dashboard');
+                };
+                document.querySelector('.nav-actions').insertBefore(btn, document.getElementById('authActions'));
+            } else {
+                editBtn.innerHTML = state.editMode ? '<i class="fa-solid fa-check"></i> Quitter Édition' : '<i class="fa-solid fa-pen-to-square"></i> Mode Édition';
+            }
         }
     } else {
         userPill.classList.add('hidden');
@@ -986,6 +1334,8 @@ function updateNavbar() {
         authActions.classList.remove('hidden');
         let adminBtn = document.getElementById('adminBtn');
         if (adminBtn) adminBtn.remove();
+        let editBtn = document.getElementById('editBtn');
+        if (editBtn) editBtn.remove();
     }
 }
 
@@ -1168,8 +1518,34 @@ function renderDashboard() {
                 </div>
             </div>
         `;
+        
+        let totalMembers = Object.values(state.data.users).filter(u => u.status === 'active').length;
+        let totalPointsInCirculation = Object.values(state.data.users).reduce((sum, u) => sum + (u.status === 'active' ? getFreePoints(u) : 0), 0);
+        let activeBetsCount = state.data.markets.filter(m => m.status !== 'resolved').length;
+        state.data.markets.forEach(m => {
+            if (m.status !== 'resolved') {
+                totalPointsInCirculation += m.volume;
+            }
+        });
 
-        return `<div>${tabBar}${leaderboardContent}</div>`;
+        const statsHtml = `
+            <div class="stats-bar" style="max-width:640px; margin: 0 auto 2rem auto;">
+                <div class="stat-card">
+                    <div class="stat-value">${totalPointsInCirculation}</div>
+                    <div class="stat-label">Points en circulation</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${totalMembers}</div>
+                    <div class="stat-label">Membres inscrits</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${activeBetsCount}</div>
+                    <div class="stat-label">Paris en cours</div>
+                </div>
+            </div>
+        `;
+
+        return `<div>${tabBar}${statsHtml}${leaderboardContent}</div>`;
     }
 
     // ─── ONGLET PARIS ──────────────────────────────────────────────
@@ -1186,9 +1562,17 @@ function renderDashboard() {
         </div></div>`;
     }
 
-    const allMarkets = [...state.data.markets].reverse();
+    const allMarkets = [...state.data.markets].sort((a, b) => (a.order || 0) - (b.order || 0));
     const openMarkets = allMarkets.filter(m => m.status !== 'resolved');
     const closedMarkets = allMarkets.filter(m => m.status === 'resolved');
+
+    const categories = [...(state.data.categories || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+    const grouped = { uncategorized: [] };
+    categories.forEach(c => grouped[c.id] = []);
+    openMarkets.forEach(m => {
+        if (m.categoryId && grouped[m.categoryId]) grouped[m.categoryId].push(m);
+        else grouped.uncategorized.push(m);
+    });
 
     const myBetMarketIds = new Set();
     if (state.currentUser) {
@@ -1211,21 +1595,49 @@ function renderDashboard() {
                 </div>
             `;
         });
-        // Badge "Ma mise" injecté directement dans le HTML
+        
+        let adminMenu = '';
+        if (state.currentUser && state.currentUser.role === 'admin') {
+            adminMenu = `
+                <div class="dropdown" style="position:absolute; top:1rem; right:1rem;" onclick="event.stopPropagation();">
+                    <button class="btn-icon" onclick="event.stopPropagation(); this.parentElement.classList.toggle('show');" style="width:30px; height:30px; border:none; background:transparent;">
+                        <i class="fa-solid fa-ellipsis-vertical"></i>
+                    </button>
+                    <div class="dropdown-content">
+                        ${m.status === 'open' ? `<a class="dropdown-item" onclick="app.togglePauseModal('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-pause"></i> Mettre en pause</a>` : ''}
+                        ${m.status === 'paused' ? `<a class="dropdown-item" onclick="app.resumeMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-play"></i> Reprendre</a>` : ''}
+                        ${m.status !== 'resolved' ? `<a class="dropdown-item" onclick="app.adminResolveMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-flag-checkered"></i> Clôturer</a>` : ''}
+                        ${m.status === 'resolved' ? `<a class="dropdown-item danger" onclick="app.adminDeleteMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-trash"></i> Supprimer</a>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        let pinBtn = '';
+        if (state.currentUser) {
+            const isPinned = state.currentUser.pinnedMarkets && state.currentUser.pinnedMarkets.includes(m.id);
+            pinBtn = `
+                <button class="btn-icon pin-btn ${isPinned ? 'pinned' : ''}" onclick="event.stopPropagation(); app.togglePinMarket('${m.id}')" title="Épingler" style="position:absolute; top:1rem; left:1rem; width:30px; height:30px; background:var(--bg-secondary); border:none; color:${isPinned ? 'var(--accent-color)' : 'var(--text-secondary)'};">
+                    <i class="fa-solid fa-thumbtack"></i>
+                </button>
+            `;
+        }
+
         const myBetBadge = hasMyBet
             ? `<span style="display:inline-block; font-size:0.7rem; font-weight:700;
                            padding:0.15rem 0.45rem; border-radius:20px;
                            background:var(--accent-color); color:white;
-                           margin-left:0.5rem; vertical-align:middle;">
-                   💰 Ma mise
-               </span>`
+                           margin-left:0.5rem; vertical-align:middle;">💰 Ma mise</span>`
             : '';
         const cardStyle = hasMyBet
             ? `border:2px solid var(--accent-color); box-shadow:0 0 0 3px var(--accent-transparent);`
             : '';
+            
         return `
-            <div class="market-card" style="${cardStyle}" onclick="app.navigate('market', '${m.id}')">
-               <div class="market-card-header">
+            <div class="market-card" data-id="${m.id}" style="position:relative; ${cardStyle}" onclick="app.navigate('market', '${m.id}')">
+                ${pinBtn}
+                ${adminMenu}
+                <div class="market-card-header" style="padding-right: 2rem; padding-left: 2rem;">
                     <div class="market-icon"><img src="${m.image}" alt=""></div>
                     <div style="display:flex; flex-direction:column; align-items:flex-end;">
                         ${m.status === 'resolved' ? `<span style="font-size:0.7rem; padding:0.2rem 0.5rem; background:var(--bg-secondary); border-radius:4px; font-weight:bold; color:var(--text-secondary); margin-bottom:0.3rem;">CLÔTURÉ</span>` : ''}
@@ -1244,20 +1656,119 @@ function renderDashboard() {
         : '<div style="margin-bottom:1rem; font-size:0.8rem; color:#ff9800"><i class="fa-solid fa-database"></i> Mode local</div>';
 
     let marketsHtml = modeIndicator;
-    marketsHtml += `<h2 style="font-size:1.1rem; font-weight:700; margin-bottom:1rem; color:var(--text-primary);"><i class="fa-solid fa-fire" style="color:var(--accent-color);"></i> Paris en cours</h2>`;
-    if (openMarkets.length === 0) {
-        marketsHtml += `<p style="color:var(--text-secondary); margin-bottom:2rem;">Aucun pari en cours pour le moment.</p>`;
-    } else {
-        marketsHtml += `<div class="market-grid">`;
-        openMarkets.forEach(m => { marketsHtml += renderMarketCard(m); });
-        marketsHtml += `</div>`;
+    
+    if (state.editMode) {
+        marketsHtml += `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 2rem; background:var(--bg-card); padding:1rem; border-radius:var(--radius-md); border:1px solid var(--border-color);">
+            <h2 style="color:var(--accent-color)"><i class="fa-solid fa-pen-to-square"></i> Mode Édition</h2>
+            <button class="btn-primary" onclick="app.adminCreateCategory()"><i class="fa-solid fa-folder-plus"></i> Nouvelle Catégorie</button>
+        </div>`;
     }
+
+    const renderCategory = (catId, catName, mList, isPinnedCat = false) => {
+        if (!state.editMode && mList.length === 0 && catId !== 'uncategorized') return '';
+        if (!state.editMode && mList.length === 0 && catId === 'uncategorized' && categories.length > 0) return '';
+        
+        const isCollapsed = state.collapsedCategories[catId];
+        let html = `<div class="category-container ${isCollapsed ? 'collapsed' : ''}" data-cat-id="${catId}">`;
+        
+        let actions = '';
+        if (state.editMode && !isPinnedCat) {
+            actions = `
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                    ${catId !== 'uncategorized' ? `<button class="btn-icon" onclick="event.stopPropagation(); app.adminDeleteCategory('${catId}')"><i class="fa-solid fa-trash" style="color:var(--no-color)"></i></button>` : ''}
+                    <div class="drag-handle cat-drag-handle" onclick="event.stopPropagation();"><i class="fa-solid fa-grip-lines"></i></div>
+                </div>
+            `;
+        }
+        
+        const displayName = catId === 'uncategorized' && categories.length === 0 ? 'Paris en cours' : catName;
+        const icon = isPinnedCat ? '<i class="fa-solid fa-thumbtack" style="color:var(--accent-color)"></i>' : '<i class="fa-solid fa-fire" style="color:var(--accent-color)"></i>';
+        
+        html += `
+            <div class="category-header" onclick="app.toggleCategoryCollapse('${catId}')" style="cursor:pointer; user-select:none;">
+                <div class="category-title" style="display:flex; align-items:center; gap:0.5rem;">
+                    <i class="fa-solid fa-chevron-down collapse-icon" style="font-size:0.8rem; transition:transform 0.2s; ${isCollapsed ? 'transform:rotate(-90deg);' : ''}"></i>
+                    ${icon} ${displayName}
+                </div>
+                ${actions}
+            </div>
+        `;
+        
+        html += `<div class="category-content" style="${isCollapsed ? 'display:none;' : ''}">`;
+        if (mList.length === 0 && state.editMode && !isPinnedCat) {
+             html += `<div class="market-list" data-cat-id="${catId}" style="min-height:100px; border:2px dashed var(--border-color); border-radius:var(--radius-md); display:flex; align-items:center; justify-content:center; color:var(--text-secondary);">Déposez des paris ici</div>`;
+        } else {
+             html += `<div class="market-grid ${!isPinnedCat ? 'market-list' : ''}" data-cat-id="${catId}" style="min-height:50px;">`;
+             mList.forEach(m => { html += renderMarketCard(m); });
+             html += `</div>`;
+        }
+        
+        if (state.editMode && !isPinnedCat) {
+            html += `<div style="margin-top:1rem; text-align:center;">
+                <button class="btn-outline" onclick="app.adminCreateMarket('${catId === 'uncategorized' ? '' : catId}')"><i class="fa-solid fa-plus"></i> Créer un pari officiel ici</button>
+            </div>`;
+        }
+        
+        html += `</div></div>`;
+        return html;
+    };
+
+    marketsHtml += `<div id="categories-container" class="${state.editMode ? 'edit-mode-active' : ''}">`;
+    
+    // Pinned Markets Category
+    if (state.currentUser && state.currentUser.pinnedMarkets && state.currentUser.pinnedMarkets.length > 0) {
+        const pinnedList = openMarkets.filter(m => state.currentUser.pinnedMarkets.includes(m.id));
+        if (pinnedList.length > 0) {
+            marketsHtml += renderCategory('pinned', 'Mes paris épinglés', pinnedList, true);
+        }
+    }
+
+    categories.forEach(c => {
+        marketsHtml += renderCategory(c.id, c.name, grouped[c.id]);
+    });
+    marketsHtml += renderCategory('uncategorized', 'Autres paris', grouped.uncategorized);
+    marketsHtml += `</div>`;
+
     if (closedMarkets.length > 0) {
         marketsHtml += `<h2 style="font-size:1rem; font-weight:700; margin-top:2.5rem; margin-bottom:1rem; color:var(--text-secondary);"><i class="fa-solid fa-flag-checkered"></i> Paris clôturés</h2>`;
         marketsHtml += `<div class="market-grid">`;
         closedMarkets.forEach(m => { marketsHtml += renderMarketCard(m); });
         marketsHtml += `</div>`;
     }
+
+    if (state.editMode) {
+        setTimeout(() => {
+            if (typeof Sortable !== 'undefined') {
+                const catContainer = document.getElementById('categories-container');
+                if (catContainer) {
+                    new Sortable(catContainer, {
+                        animation: 150,
+                        handle: '.cat-drag-handle',
+                        onEnd: () => setTimeout(app.saveReorder, 50)
+                    });
+                }
+                document.querySelectorAll('.market-list').forEach(list => {
+                    new Sortable(list, {
+                        group: 'markets',
+                        animation: 150,
+                        onEnd: () => setTimeout(app.saveReorder, 50)
+                    });
+                });
+            }
+        }, 100);
+    }
+    
+    // Fermer les dropdowns si on clique ailleurs
+    setTimeout(() => {
+        document.addEventListener('click', function closeDropdowns(e) {
+            if (!e.target.closest('.dropdown')) {
+                document.querySelectorAll('.dropdown-content').forEach(c => c.parentElement.classList.remove('show'));
+            }
+            if(state.currentView !== 'dashboard') {
+                document.removeEventListener('click', closeDropdowns);
+            }
+        });
+    }, 100);
 
     return `<div>${tabBar}${marketsHtml}</div>`;
 }
@@ -1379,6 +1890,54 @@ function renderMarket(id) {
         }
     }
 
+    const comments = m.comments || [];
+    let commentsHtml = `
+        <div class="comments-section">
+            <h3 style="margin-bottom: 1.5rem; font-size: 1.2rem;">${comments.length} Commentaire${comments.length > 1 ? 's' : ''}</h3>
+    `;
+    
+    if (state.currentUser) {
+        commentsHtml += `
+            <div class="comment-input-area">
+                <div class="comment-avatar"><i class="fa-solid fa-user"></i></div>
+                <input type="text" id="commentInput" class="comment-input" placeholder="Ajouter un commentaire publiquement..." onkeypress="if(event.key==='Enter') app.postComment('${m.id}')">
+                <button class="btn-primary" onclick="app.postComment('${m.id}')">Commenter</button>
+            </div>
+        `;
+    } else {
+        commentsHtml += `<div style="margin-bottom: 1.5rem; color: var(--text-secondary); font-size: 0.9rem;">Connectez-vous pour laisser un commentaire.</div>`;
+    }
+    
+    comments.slice().reverse().forEach(c => {
+        const d = new Date(c.time);
+        const dateStr = d.toLocaleDateString() + ' à ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const isAuthor = state.currentUser && c.userId === state.currentUser.id;
+        
+        commentsHtml += `
+            <div class="comment">
+                <div class="comment-avatar"><i class="fa-solid fa-user"></i></div>
+                <div class="comment-content">
+                    <div class="comment-header">
+                        <span class="comment-author">${c.userName}</span>
+                        ${isAuthor ? '<span style="font-size:0.7rem; background:var(--bg-secondary); padding:0.1rem 0.4rem; border-radius:10px; font-weight:bold; margin-left:0.3rem;">Vous</span>' : ''}
+                        <span class="comment-time" style="margin-left:0.5rem;">${dateStr}</span>
+                    </div>
+                    <div class="comment-text">${c.text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+                </div>
+            </div>
+        `;
+    });
+    commentsHtml += `</div>`;
+
+    let adminHistoryBtn = '';
+    if (state.currentUser && state.currentUser.role === 'admin') {
+        adminHistoryBtn = `
+            <button class="btn-outline" style="margin-left: 0.5rem; padding: 0.3rem 0.6rem; font-size: 0.8rem; border-color: var(--accent-color); color: var(--accent-color); vertical-align: middle;" onclick="app.viewMarketHistory('${m.id}')">
+                <i class="fa-solid fa-list-ul"></i> Historique
+            </button>
+        `;
+    }
+
     return `
         <button class="btn-outline" style="margin-bottom: 2rem" onclick="app.navigate('dashboard')">
             <i class="fa-solid fa-arrow-left"></i> Retour
@@ -1389,7 +1948,7 @@ function renderMarket(id) {
                 <div class="chart-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">
                     <div style="display:flex; align-items:center; gap:1rem;">
                         <img src="${m.image}" alt="" style="width: 56px; height: 56px; border-radius: 8px; flex-shrink:0;">
-                        <h1 style="font-size: 1.3rem; line-height:1.3;">${m.title}</h1>
+                        <h1 style="font-size: 1.3rem; line-height:1.3;">${m.title}${adminHistoryBtn}</h1>
                     </div>
                     <button class="chart-toggle-btn" onclick="app.toggleChart()" id="chartToggleBtn">
                         ${state.chartHidden ? '<i class="fa-solid fa-chart-line"></i> Afficher' : '<i class="fa-solid fa-eye-slash"></i> Masquer'} le graphe
@@ -1416,50 +1975,85 @@ function renderMarket(id) {
                 ${portfolioHtml}
             </div>
         </div>
+        
+        <div style="max-width: 800px;">
+            ${commentsHtml}
+        </div>
     `;
 }
 
 function renderAdmin() {
     if (!state.currentUser || state.currentUser.role !== 'admin') return `<h1>Accès Refusé.</h1>`;
 
-    let activeUsers = '';
     let pendingUsers = '';
-    Object.values(state.data.users).forEach(u => {
+    Object.values(state.data.users).filter(u => u.status === 'pending').forEach(u => {
         let details = `Buque: ${u.buque || '-'}, Num's: ${u.nums || '-'}, Prom's: ${u.proms || '-'}`;
-        if (u.status === 'pending') {
-            pendingUsers += `
-                <div class="user-row" style="border-color: #ff9800;">
-                    <div>
-                        <span style="font-weight: 600">${u.name} (@${u.username})</span> <br>
-                        <span style="font-size: 0.8rem; color: var(--text-secondary)">${details}</span>
-                    </div>
-                    <div>
-                        <button class="btn-primary" onclick="app.approveUser('${u.id}')">Accepter</button>
-                        <button class="btn-outline" onclick="app.rejectUser('${u.id}')">Rejeter</button>
-                    </div>
+        pendingUsers += `
+            <div class="user-row" style="border-color: #ff9800;">
+                <div>
+                    <span style="font-weight: 600">${u.name} (@${u.username})</span> <br>
+                    <span style="font-size: 0.8rem; color: var(--text-secondary)">${details}</span>
                 </div>
-            `;
-        } else {
-            activeUsers += `
-                <div class="user-row">
-                    <div>
-                        <span style="font-weight: 600">${u.name}</span>
-                        <span style="color: var(--text-secondary); margin-left:1rem"><i class="fa-solid fa-coins"></i> ${Math.floor(u.points)} pts</span>
-                        <br><span style="font-size: 0.8rem; color: var(--text-secondary)">${details}</span>
-                    </div>
-                    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:flex-end;">
-                        <button class="btn-outline" onclick="app.grantPoints('${u.id}')"><i class="fa-solid fa-coins"></i> Points</button>
-                        <button class="btn-outline" onclick="app.viewUserHistory('${u.id}', '${u.name}')"><i class="fa-solid fa-clock-rotate-left"></i></button>
-                        ${state.currentUser.id === 'admin' && u.id !== 'admin' ? 
-                            `<button class="btn-outline" onclick="app.toggleAdmin('${u.id}')"><i class="fa-solid fa-star"></i> ${u.role === 'admin' ? 'Retirer Admin' : 'Nommer Admin'}</button>` 
-                            : ''}
-                        ${state.currentUser.id === 'admin' && u.id !== 'admin' ?
-                            `<button class="btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="app.deleteUser('${u.id}', '${u.name}')"><i class="fa-solid fa-user-slash"></i></button>`
-                            : ''}
-                    </div>
+                <div>
+                    <button class="btn-primary" onclick="app.approveUser('${u.id}')">Accepter</button>
+                    <button class="btn-outline" onclick="app.rejectUser('${u.id}')">Rejeter</button>
                 </div>
-            `;
+            </div>
+        `;
+    });
+
+    let activeUsersList = Object.values(state.data.users).filter(u => u.status !== 'pending');
+    
+    // Sort
+    const sortBy = state.adminSortBy || 'role';
+    activeUsersList.sort((a, b) => {
+        if (sortBy === 'role') {
+            if (a.role === 'admin' && b.role !== 'admin') return -1;
+            if (b.role === 'admin' && a.role !== 'admin') return 1;
+            return a.name.localeCompare(b.name);
+        } else if (sortBy === 'name') {
+            return a.name.localeCompare(b.name);
+        } else if (sortBy === 'points') {
+            return (b.points || 0) - (a.points || 0);
+        } else if (sortBy === 'date') {
+            return (b.id || '').localeCompare(a.id || '');
         }
+        return 0;
+    });
+
+    // Filter
+    const search = (state.adminSearch || '').toLowerCase();
+    if (search) {
+        activeUsersList = activeUsersList.filter(u => 
+            u.name.toLowerCase().includes(search) || 
+            (u.username && u.username.toLowerCase().includes(search)) ||
+            (u.buque && u.buque.toLowerCase().includes(search)) ||
+            (u.nums && String(u.nums).toLowerCase().includes(search))
+        );
+    }
+
+    let activeUsers = '';
+    activeUsersList.forEach(u => {
+        let details = `Buque: ${u.buque || '-'}, Num's: ${u.nums || '-'}, Prom's: ${u.proms || '-'}`;
+        activeUsers += `
+            <div class="user-row">
+                <div>
+                    <span style="font-weight: 600">${u.name} ${u.role === 'admin' ? '<span style="font-size:0.7rem; background:var(--accent-transparent); padding:0.1rem 0.4rem; border-radius:10px; color:var(--accent-color); margin-left:0.3rem;">ADMIN</span>' : ''}</span>
+                    <span style="color: var(--text-secondary); margin-left:1rem"><i class="fa-solid fa-coins"></i> ${Math.floor(u.points)} pts</span>
+                    <br><span style="font-size: 0.8rem; color: var(--text-secondary)">${details}</span>
+                </div>
+                <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:flex-end;">
+                    <button class="btn-outline" onclick="app.grantPoints('${u.id}')"><i class="fa-solid fa-coins"></i> Points</button>
+                    <button class="btn-outline" onclick="app.viewUserHistory('${u.id}', '${u.name}')"><i class="fa-solid fa-clock-rotate-left"></i></button>
+                    ${state.currentUser.id === 'admin' && u.id !== 'admin' ? 
+                        `<button class="btn-outline" onclick="app.toggleAdmin('${u.id}')"><i class="fa-solid fa-star"></i> ${u.role === 'admin' ? 'Retirer Admin' : 'Nommer Admin'}</button>` 
+                        : ''}
+                    ${state.currentUser.id === 'admin' && u.id !== 'admin' ?
+                        `<button class="btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="app.deleteUser('${u.id}', '${u.name}')"><i class="fa-solid fa-user-slash"></i></button>`
+                        : ''}
+                </div>
+            </div>
+        `;
     });
 
     let adminMarketsHtml = '';
@@ -1543,7 +2137,20 @@ function renderAdmin() {
 
         <div class="admin-card">
             <h2 class="admin-header"><i class="fa-solid fa-users"></i> Membres Actifs &amp; Points</h2>
-            <div class="users-list">${activeUsers}</div>
+            <div class="admin-toolbar" style="display:flex; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; background:var(--bg-secondary); padding:1rem; border-radius:var(--radius-md); border:1px solid var(--border-color);">
+                <div style="flex:1; min-width:200px;">
+                    <input type="text" id="adminSearchInput" placeholder="Rechercher un membre (pseudo, buque, noms)..." value="${state.adminSearch || ''}" oninput="app.handleAdminSearch()" style="width:100%; padding:0.5rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-primary);">
+                </div>
+                <div>
+                    <select id="adminSortSelect" onchange="app.handleAdminSort()" style="padding:0.5rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-primary);">
+                        <option value="role" ${state.adminSortBy==='role'?'selected':''}>Trier par : Rôle (Admins d'abord)</option>
+                        <option value="name" ${state.adminSortBy==='name'?'selected':''}>Trier par : Pseudo (A-Z)</option>
+                        <option value="points" ${state.adminSortBy==='points'?'selected':''}>Trier par : Points (Décroissant)</option>
+                        <option value="date" ${state.adminSortBy==='date'?'selected':''}>Trier par : Inscription (Plus récent)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="users-list">${activeUsers === '' ? '<p>Aucun utilisateur trouvé.</p>' : activeUsers}</div>
         </div>
 
         ${state.currentUser.id === 'admin' ? `
