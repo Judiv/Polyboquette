@@ -56,11 +56,13 @@ DEFAULT_DB = {
         "admin": {
             "id": "admin", "username": "admin", "password": "admin123",
             "name": "ADMIN", "role": "admin", "status": "active",
-            "points": 1000, "buque": "admin", "nums": "00", "proms": "Me225",
-            "transactions": []
+            "points": 1000, "buque": "BDE", "nums": "1", "proms": "Me221",
+            "transactions": [],
+            "pinnedMarkets": []
         }
     },
     "markets": [],
+    "categories": [],
     "proposals": [],
     "admin_grants_log": [],
     "name_change_requests": []
@@ -87,6 +89,8 @@ def _ensure_pg_table(conn):
 
 def _migrate(db):
     """Applique les migrations sur une DB chargée."""
+    if "categories" not in db:
+        db["categories"] = []
     if "proposals" not in db:
         db["proposals"] = []
     if "admin_grants_log" not in db:
@@ -96,6 +100,17 @@ def _migrate(db):
     for u in db["users"].values():
         if "transactions" not in u:
             u["transactions"] = []
+        if "pinnedMarkets" not in u:
+            u["pinnedMarkets"] = []
+    for m in db.get("markets", []):
+        if "comments" not in m:
+            m["comments"] = []
+        if "pauseAt" not in m:
+            m["pauseAt"] = None
+        if "categoryId" not in m:
+            m["categoryId"] = None
+        if "order" not in m:
+            m["order"] = 0
     return db
 
 
@@ -216,6 +231,20 @@ def add_tx(user, desc, amount):
     user["transactions"] = user["transactions"][:50]
 
 
+def is_market_open(market):
+    if market.get("status") != "open":
+        return False
+    pause_at = market.get("pauseAt")
+    if pause_at:
+        now = datetime.now(timezone.utc).isoformat()
+        # Handle JS ISO string format mapping
+        if pause_at.endswith('Z'):
+            pause_at = pause_at[:-1] + '+00:00'
+        if now >= pause_at:
+            return False
+    return True
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ROUTES – FRONTEND (SPA)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -230,6 +259,12 @@ def css(filename):
 @app.route("/js/<path:filename>")
 def js(filename):
     return send_from_directory(os.path.join(BASE_DIR, "js"), filename)
+
+@app.route("/<path:filename>")
+def root_static(filename):
+    if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.svg', '.gif', '.ico')):
+        return send_from_directory(BASE_DIR, filename)
+    abort(404)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -356,6 +391,13 @@ def get_markets():
     return jsonify(db["markets"])
 
 
+@app.route("/api/categories")
+@login_required
+def get_categories():
+    db = load_db()
+    return jsonify(db.get("categories", []))
+
+
 @app.route("/api/markets/<market_id>")
 @login_required
 def get_market(market_id):
@@ -378,8 +420,8 @@ def place_bet(market_id):
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
     if not m:
         return jsonify({"error": "Marché introuvable"}), 404
-    if m["status"] != "open":
-        return jsonify({"error": "Ce marché n'accepte plus de transactions"}), 400
+    if not is_market_open(m):
+        return jsonify({"error": "Ce marché n'accepte plus de transactions (fermé ou en pause)"}), 400
     if not isinstance(amount, int) or amount <= 0:
         return jsonify({"error": "Montant invalide"}), 400
     if user["points"] < amount:
@@ -418,7 +460,17 @@ def place_bet(market_id):
     hist = {"time": now_iso, **probs}
     m["history"].append(hist)
 
-    add_tx(user, f"Mise dans '{m['title']}'", -amount)
+    m.setdefault("actionLog", []).append({
+        "time": now_iso,
+        "userId": user["id"],
+        "userName": user["name"],
+        "type": "bet",
+        "amount": amount,
+        "optId": opt_id,
+        "optLabel": opt["label"]
+    })
+
+    add_tx(user, f"Mise dans '{m['title']}' ({opt['label']})", -amount)
 
     save_db(db)
     return jsonify({"user": safe_user(user), "market": m})
@@ -431,8 +483,8 @@ def cashout_bet(market_id, bet_id):
     db = load_db()
     user = db["users"].get(session["user_id"])
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
-    if not m or m["status"] != "open":
-        return jsonify({"error": "Revente impossible"}), 400
+    if not m or not is_market_open(m):
+        return jsonify({"error": "Revente impossible (marché fermé ou en pause)"}), 400
     bet_idx = next((i for i, b in enumerate(m["bets"]) if b["id"] == bet_id), None)
     if bet_idx is None:
         return jsonify({"error": "Pari introuvable"}), 404
@@ -462,15 +514,56 @@ def cashout_bet(market_id, bet_id):
     new_probs = compute_probs(m)
     m["history"].append({"time": now_iso, **new_probs})
 
-    if partial_amount >= bet["amount"]:
+    original_bet_amount = bet["amount"]
+    if partial_amount >= original_bet_amount:
         m["bets"].pop(bet_idx)
     else:
         bet["amount"] -= partial_amount
 
-    add_tx(user, f"Revente dans '{m['title']}'", refund)
+    m.setdefault("actionLog", []).append({
+        "time": now_iso,
+        "userId": user["id"],
+        "userName": user["name"],
+        "type": "cashout",
+        "amount": partial_amount,
+        "cashoutVal": refund,
+        "optId": bet["optId"],
+        "optLabel": opt["label"]
+    })
+
+    add_tx(user, f"Revente {('(partielle) ' if partial_amount < original_bet_amount else '')}'{m['title']}' ({opt['label']})", refund)
 
     save_db(db)
     return jsonify({"user": safe_user(user), "market": m, "refund": refund})
+
+
+@app.route("/api/markets/<market_id>/comments", methods=["POST"])
+@login_required
+def post_comment(market_id):
+    data = request.get_json()
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "Commentaire vide"}), 400
+        
+    db = load_db()
+    user = db["users"].get(session["user_id"])
+    m = next((m for m in db["markets"] if m["id"] == market_id), None)
+    if not m:
+        return jsonify({"error": "Marché introuvable"}), 404
+        
+    if "comments" not in m:
+        m["comments"] = []
+        
+    comment = {
+        "id": "c" + secrets.token_hex(6),
+        "userId": user["id"],
+        "userName": user["name"],
+        "text": text,
+        "time": datetime.now(timezone.utc).isoformat()
+    }
+    m["comments"].append(comment)
+    save_db(db)
+    return jsonify({"ok": True, "comment": comment})
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -666,6 +759,7 @@ def admin_create_market():
     title   = (data.get("title") or "").strip()
     choices = data.get("choices", [])
     image   = (data.get("image") or "").strip()
+    category_id = data.get("categoryId")
     db = load_db()
 
     if not title or len(choices) < 2:
@@ -684,6 +778,8 @@ def admin_create_market():
         "image": image or "https://images.unsplash.com/photo-1550565118-3a14e8d0386f?auto=format&fit=crop&w=150&q=80",
         "volume": 0, "status": "open", "resolvedWinner": None,
         "bets": [], "options": options,
+        "categoryId": category_id,
+        "order": 999,
         "history": [{"time": "Début", **init_probs}]
     }
     db["markets"].append(new_market)
@@ -694,13 +790,25 @@ def admin_create_market():
 @app.route("/api/admin/markets/<market_id>/toggle-pause", methods=["POST"])
 @admin_required
 def admin_toggle_pause(market_id):
+    data = request.get_json() or {}
     db = load_db()
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
     if not m:
         return jsonify({"error": "Introuvable"}), 404
-    m["status"] = "paused" if m["status"] == "open" else "open"
+        
+    if m["status"] == "open":
+        pause_at = data.get("pauseAt")
+        if pause_at == "now":
+            m["status"] = "paused"
+            m["pauseAt"] = None
+        else:
+            m["pauseAt"] = pause_at # ISO string future date
+    else:
+        m["status"] = "open"
+        m["pauseAt"] = None
+        
     save_db(db)
-    return jsonify({"status": m["status"]})
+    return jsonify({"status": m["status"], "pauseAt": m.get("pauseAt")})
 
 
 @app.route("/api/admin/markets/<market_id>/resolve", methods=["POST"])
@@ -781,6 +889,73 @@ def get_user_transactions(user_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# ADMIN - CATÉGORIES & REORDERING
+# ──────────────────────────────────────────────────────────────────────────────
+@app.route("/api/admin/categories", methods=["GET", "POST"])
+@admin_required
+def admin_categories():
+    db = load_db()
+    if request.method == "GET":
+        return jsonify(db.get("categories", []))
+        
+    # POST
+    data = request.get_json()
+    action = data.get("action")
+    if action == "create":
+        name = data.get("name", "").strip()
+        if not name:
+            return jsonify({"error": "Nom requis"}), 400
+        new_cat = {
+            "id": "cat_" + secrets.token_hex(4),
+            "name": name,
+            "order": len(db.get("categories", []))
+        }
+        if "categories" not in db:
+            db["categories"] = []
+        db["categories"].append(new_cat)
+        save_db(db)
+        return jsonify({"ok": True, "category": new_cat})
+    elif action == "delete":
+        cat_id = data.get("id")
+        db["categories"] = [c for c in db.get("categories", []) if c["id"] != cat_id]
+        # Reset market categories that were in this category
+        for m in db["markets"]:
+            if m.get("categoryId") == cat_id:
+                m["categoryId"] = None
+        save_db(db)
+        return jsonify({"ok": True})
+    return jsonify({"error": "Action inconnue"}), 400
+
+
+@app.route("/api/admin/markets/reorder", methods=["POST"])
+@admin_required
+def admin_reorder_markets():
+    data = request.get_json()
+    categories = data.get("categories", []) # list of {id, order}
+    markets = data.get("markets", []) # list of {id, categoryId, order}
+    
+    db = load_db()
+    if "categories" not in db:
+        db["categories"] = []
+        
+    # Update categories order
+    for c_data in categories:
+        c = next((c for c in db["categories"] if c["id"] == c_data["id"]), None)
+        if c:
+            c["order"] = c_data["order"]
+            
+    # Update markets category and order
+    for m_data in markets:
+        m = next((m for m in db["markets"] if m["id"] == m_data["id"]), None)
+        if m:
+            m["categoryId"] = m_data.get("categoryId")
+            m["order"] = m_data.get("order", 0)
+            
+    save_db(db)
+    return jsonify({"ok": True})
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # ADMIN – JOURNAL DES CRÉDITS
 # ──────────────────────────────────────────────────────────────────────────────
 @app.route("/api/admin/grants-log")
@@ -856,6 +1031,33 @@ def admin_reject_name_change(req_id):
     req["status"] = "rejected"
     save_db(db)
     return jsonify({"ok": True})
+
+
+@app.route("/api/users/pin-market", methods=["POST"])
+@login_required
+def toggle_pin_market():
+    data = request.get_json()
+    market_id = data.get("marketId")
+    if not market_id:
+        return jsonify({"error": "marketId requis"}), 400
+    
+    db = load_db()
+    user = db["users"].get(session["user_id"])
+    if not user:
+        return jsonify({"error": "Utilisateur non trouvé"}), 404
+    
+    if "pinnedMarkets" not in user:
+        user["pinnedMarkets"] = []
+        
+    if market_id in user["pinnedMarkets"]:
+        user["pinnedMarkets"].remove(market_id)
+        pinned = False
+    else:
+        user["pinnedMarkets"].append(market_id)
+        pinned = True
+        
+    save_db(db)
+    return jsonify({"user": safe_user(user), "pinned": pinned})
 
 
 # ──────────────────────────────────────────────────────────────────────────────
