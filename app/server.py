@@ -969,6 +969,55 @@ def admin_grants_log():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# ADMIN – JOURNAL D'ACTIVITÉ GLOBAL
+# ──────────────────────────────────────────────────────────────────────────────
+@app.route("/api/admin/activity-log")
+@admin_required
+def admin_activity_log():
+    """
+    Agrège tous les actionLog des marchés + admin_grants_log.
+    Retourne jusqu'à 500 entrées triées du plus récent au plus ancien.
+    """
+    db = load_db()
+    logs = []
+
+    # Collecte des actions de marché (mises & retraits)
+    for m in db.get("markets", []):
+        for entry in m.get("actionLog", []):
+            logs.append({
+                "marketId":    m["id"],
+                "marketTitle": m["title"],
+                "type":        entry.get("type", "bet"),
+                "time":        entry.get("time", ""),
+                "userId":      entry.get("userId", ""),
+                "userName":    entry.get("userName", ""),
+                "amount":      entry.get("amount", 0),
+                "cashoutVal":  entry.get("cashoutVal"),
+                "optId":       entry.get("optId"),
+                "optLabel":    entry.get("optLabel", ""),
+            })
+
+    # Collecte des crédits/débits admin
+    for g in db.get("admin_grants_log", []):
+        logs.append({
+            "marketId":    None,
+            "marketTitle": None,
+            "type":        "grant",
+            "time":        g.get("time", ""),
+            "userId":      g.get("targetId", ""),
+            "userName":    g.get("targetName", ""),
+            "adminId":     g.get("adminId", ""),
+            "adminName":   g.get("adminName", ""),
+            "amount":      g.get("amount", 0),
+        })
+
+    # Tri décroissant par timestamp (ISO string → tri lexicographique correct)
+    logs.sort(key=lambda x: x.get("time", ""), reverse=True)
+
+    return jsonify(logs[:500])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # DEMANDES DE CHANGEMENT DE PSEUDONYME
 # ──────────────────────────────────────────────────────────────────────────────
 @app.route("/api/profile/request-name-change", methods=["POST"])
