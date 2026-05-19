@@ -270,11 +270,11 @@ const app = {
             container.innerHTML = renderMarket(state.currentMarketId);
             setTimeout(() => initChart(state.currentMarketId), 10);
         }
-        else if (state.currentView === 'admin') container.innerHTML = renderAdmin();
-        else if (state.currentView === 'login') container.innerHTML = renderLogin();
-        else if (state.currentView === 'register') container.innerHTML = renderRegister();
-        else if (state.currentView === 'proposals') container.innerHTML = renderProposals();
-        else if (state.currentView === 'profile') container.innerHTML = renderProfile();
+        else if (state.currentView === 'admin')     container.innerHTML = renderAdmin();
+        else if (state.currentView === 'login')      container.innerHTML = renderLogin();
+        else if (state.currentView === 'register')   container.innerHTML = renderRegister();
+        else if (state.currentView === 'proposals')  container.innerHTML = renderProposals();
+        else if (state.currentView === 'profile')    container.innerHTML = renderProfile();
     },
 
     selectOption: (optId) => {
@@ -1300,6 +1300,105 @@ const app = {
         app.filterActivityLog();
     },
 
+    kickUser: async (userId, userName) => {
+        ui.showModal(
+            `<i class='fa-solid fa-plug-circle-xmark' style='color:#f97316'></i> Déconnecter partout`,
+            `<p>Déconnecter <strong>${esc(userName)}</strong> de tous ses appareils ?<br><span style="font-size:0.85rem; color:var(--text-secondary)">Sa prochaine requête lui demandera de se reconnecter.</span></p>`,
+            async () => {
+                try {
+                    await apiCall('POST', `/api/admin/users/${userId}/kick`);
+                    ui.showToast(`${esc(userName)} déconnecté(e) de tous ses appareils.`, 'success');
+                    ui.closeModal(true);
+                } catch(e) {
+                    ui.showToast(e.message, 'error');
+                }
+            },
+            'Déconnecter'
+        );
+    },
+
+    renameMarket: (marketId, currentTitle) => {
+        ui.showModal(
+            `<i class='fa-solid fa-pen' style='color:var(--accent-color)'></i> Modifier le titre`,
+            `<div style="display:flex;flex-direction:column;gap:0.75rem;">
+                <label style="font-size:0.85rem;color:var(--text-secondary)">Nouveau titre du pari</label>
+                <input id="renameMarketInput" type="text" class="form-input" value="${esc(currentTitle)}" maxlength="120"
+                    style="width:100%;font-size:1rem;" />
+            </div>`,
+            async () => {
+                const input = document.getElementById('renameMarketInput');
+                const newTitle = (input?.value || '').trim();
+                if (!newTitle) { ui.showToast('Le titre ne peut pas être vide.', 'error'); return; }
+                try {
+                    await apiCall('POST', `/api/admin/markets/${marketId}/rename`, { title: newTitle });
+                    const m = state.data.markets.find(x => x.id === marketId);
+                    if (m) m.title = newTitle;
+                    ui.showToast('Titre mis à jour.', 'success');
+                    ui.closeModal(true);
+                    app.renderCurrentView();
+                } catch(e) {
+                    ui.showToast(e.message, 'error');
+                }
+            },
+            'Enregistrer'
+        );
+        setTimeout(() => document.getElementById('renameMarketInput')?.select(), 100);
+    },
+
+    loadLoginLog: async () => {
+        const container = document.getElementById('loginLogContainer');
+        if (!container) return;
+        container.innerHTML = `<p style="text-align:center; padding:1rem; color:var(--text-secondary);"><i class="fa-solid fa-spinner fa-spin"></i> Chargement...</p>`;
+        try {
+            const logs = await apiCall('GET', '/api/admin/login-log');
+            if (!logs.length) {
+                container.innerHTML = `<p style="color:var(--text-secondary); text-align:center; padding:1rem;">Aucune connexion enregistrée.</p>`;
+                return;
+            }
+            // Détecter le navigateur à partir du User-Agent
+            const parseBrowser = ua => {
+                if (/Edg\//.test(ua))    return 'Edge';
+                if (/Chrome\//.test(ua)) return 'Chrome';
+                if (/Firefox\//.test(ua)) return 'Firefox';
+                if (/Safari\//.test(ua)) return 'Safari';
+                if (/curl/.test(ua))     return 'cURL';
+                return 'Navigateur inconnu';
+            };
+            const parseOS = ua => {
+                if (/Windows NT/.test(ua))  return 'Windows';
+                if (/Mac OS X/.test(ua))    return 'macOS';
+                if (/Linux/.test(ua))       return 'Linux';
+                if (/Android/.test(ua))     return 'Android';
+                if (/iPhone|iPad/.test(ua)) return 'iOS';
+                return '';
+            };
+            const rows = logs.map(l => {
+                const d = new Date(l.time);
+                const dateStr = d.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'medium' });
+                const browser = parseBrowser(l.userAgent || '');
+                const os      = parseOS(l.userAgent || '');
+                const deviceStr = [browser, os].filter(Boolean).join(' / ');
+                return `<div class="user-row" style="flex-direction:column; align-items:stretch; gap:0.25rem; padding:0.75rem 1rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                        <span style="font-weight:600; font-size:0.9rem;">
+                            <i class="fa-solid fa-right-to-bracket" style="color:var(--accent-color); margin-right:0.35rem;"></i>${esc(dateStr)}
+                        </span>
+                        <span style="font-size:0.8rem; font-family:monospace; background:var(--bg-secondary); padding:0.15rem 0.5rem; border-radius:4px; color:var(--text-primary);">
+                            <i class="fa-solid fa-network-wired" style="margin-right:0.3rem; color:var(--text-secondary);"></i>${esc(l.ip)}
+                        </span>
+                    </div>
+                    <div style="font-size:0.78rem; color:var(--text-secondary); margin-top:0.15rem;">
+                        <i class="fa-solid fa-display" style="margin-right:0.3rem;"></i>${esc(deviceStr)}
+                        <span style="margin-left:0.75rem; opacity:0.7;" title="${esc(l.userAgent)}">${esc((l.userAgent || '').substring(0, 80))}${(l.userAgent || '').length > 80 ? '…' : ''}</span>
+                    </div>
+                </div>`;
+            }).join('');
+            container.innerHTML = `<div style="max-height:400px; overflow-y:auto;">${rows}</div>`;
+        } catch(e) {
+            container.innerHTML = `<p style="color:var(--error-color); text-align:center; padding:1rem;">${esc(e.message)}</p>`;
+        }
+    },
+
     filterActivityLog: () => {
         if (!state.adminActivityLog) return;
         const typeFilter  = document.getElementById('activityTypeFilter')?.value  || 'all';
@@ -1708,6 +1807,7 @@ function renderDashboard() {
                         <i class="fa-solid fa-ellipsis-vertical"></i>
                     </button>
                     <div class="dropdown-content">
+                        <a class="dropdown-item" onclick="app.renameMarket('${m.id}', '${esc(m.title).replace(/'/g, '&#39;')}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-pen"></i> Modifier le titre</a>
                         ${m.status === 'open' ? `<a class="dropdown-item" onclick="app.togglePauseModal('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-pause"></i> Mettre en pause</a>` : ''}
                         ${m.status === 'paused' ? `<a class="dropdown-item" onclick="app.resumeMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-play"></i> Reprendre</a>` : ''}
                         ${m.status !== 'resolved' ? `<a class="dropdown-item" onclick="app.adminResolveMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-flag-checkered"></i> Clôturer</a>` : ''}
@@ -2149,10 +2249,12 @@ function renderAdmin() {
                 <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:flex-end;">
                     <button class="btn-outline" onclick="app.grantPoints('${u.id}')"><i class="fa-solid fa-coins"></i> Points</button>
                     <button class="btn-outline" onclick="app.viewUserHistory('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-clock-rotate-left"></i></button>
-                    ${state.currentUser.id === 'admin' && u.id !== 'admin' ? 
+                    ${state.currentUser.superAdmin ?
+                        `<button class="btn-outline" style="color:#f97316;border-color:#f97316" title="Déconnecter de tous les appareils" onclick="app.kickUser('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-plug-circle-xmark"></i></button>` : ''}
+                    ${state.currentUser.superAdmin && u.id !== state.currentUser.id ? 
                         `<button class="btn-outline" onclick="app.toggleAdmin('${u.id}')"><i class="fa-solid fa-star"></i> ${u.role === 'admin' ? 'Retirer Admin' : 'Nommer Admin'}</button>` 
                         : ''}
-                    ${state.currentUser.id === 'admin' && u.id !== 'admin' ?
+                    ${state.currentUser.role === 'admin' && u.role !== 'admin' ?
                         `<button class="btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="app.deleteUser('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-user-slash"></i></button>`
                         : ''}
                 </div>
@@ -2301,6 +2403,21 @@ function renderAdmin() {
                 </p>
             </div>
         </div>
+
+        ${state.currentUser.superAdmin ? `
+        <div class="admin-section">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+                <h2 style="margin:0;"><i class="fa-solid fa-shield-halved" style="color:var(--accent-color);margin-right:0.5rem;"></i>Connexions du compte admin</h2>
+                <button class="btn-outline" onclick="app.loadLoginLog()" style="font-size:0.85rem; padding:0.4rem 0.9rem;">
+                    <i class="fa-solid fa-arrows-rotate"></i> Actualiser
+                </button>
+            </div>
+            <div id="loginLogContainer">
+                <p style="color:var(--text-secondary); text-align:center; padding:1rem;">
+                    <i class="fa-solid fa-hand-pointer"></i> Cliquez sur "Actualiser" pour charger les connexions.
+                </p>
+            </div>
+        </div>` : ''}
     `;
 }
 
