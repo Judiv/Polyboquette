@@ -16,9 +16,12 @@ import os
 import copy
 import json
 import secrets
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, request, jsonify, session, send_from_directory, abort
+from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
     import psycopg2
@@ -51,22 +54,33 @@ DATABASE_URL = os.environ.get("DATABASE_URL")  # mis à dispo automatiquement pa
 USE_PG = PSYCOPG2_AVAILABLE and bool(DATABASE_URL)
 
 DEFAULT_DB = {
-    "version": 6,
-    "users": {
-        "admin": {
-            "id": "admin", "username": "admin", "password": "admin123",
-            "name": "ADMIN", "role": "admin", "status": "active",
-            "points": 1000, "buque": "BDE", "nums": "1", "proms": "Me221",
-            "transactions": [],
-            "pinnedMarkets": []
-        }
-    },
+    "version": 7,
+    "users": {},
     "markets": [],
     "categories": [],
     "proposals": [],
     "admin_grants_log": [],
+    "admin_login_log": [],
     "name_change_requests": []
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RATE LIMITING (brute-force protection sur /api/auth/login)
+# ──────────────────────────────────────────────────────────────────────────────
+_login_attempts: dict = defaultdict(list)  # ip -> [timestamps]
+LOGIN_MAX_ATTEMPTS = 5   # tentatives max
+LOGIN_WINDOW_SEC   = 60  # par fenêtre de 60 secondes
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Retourne True si l'IP est limitée (trop de tentatives)."""
+    now = time.time()
+    attempts = [t for t in _login_attempts[ip] if now - t < LOGIN_WINDOW_SEC]
+    _login_attempts[ip] = attempts
+    if len(attempts) >= LOGIN_MAX_ATTEMPTS:
+        return True
+    _login_attempts[ip].append(now)
+    return False
 
 
 
@@ -97,11 +111,28 @@ def _migrate(db):
         db["admin_grants_log"] = []
     if "name_change_requests" not in db:
         db["name_change_requests"] = []
+    if "admin_login_log" not in db:
+        db["admin_login_log"] = []
+    # Migration : supprimer le compte admin hardcodé avec password en clair
+    admin_hardcoded = db["users"].get("admin")
+    if admin_hardcoded and admin_hardcoded.get("password") == "admin123":
+        del db["users"]["admin"]
+        print("[MIGRATION] Compte admin hardcodé supprimé. Définissez ADMIN_PASSWORD pour créer un compte admin.")
     for u in db["users"].values():
         if "transactions" not in u:
             u["transactions"] = []
         if "pinnedMarkets" not in u:
             u["pinnedMarkets"] = []
+        # Migration mots de passe en clair → hash werkzeug
+        pwd = u.get("password", "")
+        if pwd and not pwd.startswith(("pbkdf2:", "scrypt:", "argon2:")):
+            u["password"] = generate_password_hash(pwd)
+        # Champ session_token pour la révocation
+        if "session_token" not in u:
+            u["session_token"] = None
+        # Initialiser superAdmin à False pour tous les non-admins
+        if u.get("role") != "admin" and "superAdmin" not in u:
+            u["superAdmin"] = False
     for m in db.get("markets", []):
         if "comments" not in m:
             m["comments"] = []
@@ -111,7 +142,56 @@ def _migrate(db):
             m["categoryId"] = None
         if "order" not in m:
             m["order"] = 0
+    # Migration superAdmin : si aucun admin n'a le flag, le promouvoir automatiquement.
+    # Fonctionne indépendamment de ADMIN_PASSWORD — s'applique dès le premier load_db().
+    admin_users = [u for u in db["users"].values() if u.get("role") == "admin"]
+    if admin_users and not any(u.get("superAdmin") for u in admin_users):
+        admin_users[0]["superAdmin"] = True
+        print(f"[MIGRATION] Flag superAdmin attribué à '{admin_users[0].get('name', '?')}'.")
     return db
+
+
+def _ensure_admin(db):
+    """
+    Crée (ou met à jour) le compte admin depuis les variables d'environnement.
+    ADMIN_USERNAME  (défaut: "admin")
+    ADMIN_PASSWORD  (OBLIGATOIRE — aucun compte créé si absent)
+    ADMIN_NAME      (défaut: "ADMIN")
+    """
+    raw_pwd = os.environ.get("ADMIN_PASSWORD", "").strip()
+    if not raw_pwd:
+        return  # Pas de variable définie → pas de compte auto-créé
+    username = os.environ.get("ADMIN_USERNAME", "admin").strip()
+    display  = os.environ.get("ADMIN_NAME",     "ADMIN").strip()
+    # Chercher un compte admin existant
+    existing = next((u for u in db["users"].values() if u.get("role") == "admin"), None)
+    if existing:
+        # Mettre à jour le mot de passe si ADMIN_PASSWORD a changé
+        if not check_password_hash(existing["password"], raw_pwd):
+            existing["password"] = generate_password_hash(raw_pwd)
+            print("[ADMIN] Mot de passe admin mis à jour.")
+        # S'assurer que le flag superAdmin est présent (migration des comptes créés avant ce flag)
+        if not existing.get("superAdmin"):
+            existing["superAdmin"] = True
+            print("[ADMIN] Flag superAdmin ajouté au compte admin existant.")
+        return
+    # Créer le compte admin
+    admin_id = "a" + secrets.token_hex(8)
+    db["users"][admin_id] = {
+        "id": admin_id,
+        "username": username,
+        "password": generate_password_hash(raw_pwd),
+        "name": display,
+        "role": "admin",
+        "superAdmin": True,   # seul ce compte peut kicker et gérer les rôles
+        "status": "active",
+        "points": 1000,
+        "buque": "", "nums": "", "proms": "",
+        "transactions": [],
+        "pinnedMarkets": [],
+        "session_token": None
+    }
+    print(f"[ADMIN] Compte super-admin '{username}' créé.")
 
 
 def load_db():
@@ -124,9 +204,13 @@ def load_db():
                 row = cur.fetchone()
             conn.close()
             if row:
-                return _migrate(json.loads(row[0]))
+                db = _migrate(json.loads(row[0]))
+                _ensure_admin(db)
+                save_db(db)
+                return db
             # Première utilisation : initialiser avec DEFAULT_DB
             db = copy.deepcopy(DEFAULT_DB)
+            _ensure_admin(db)
             save_db(db)
             return db
         except Exception as e:
@@ -141,7 +225,10 @@ def load_db():
             return db
         with open(DB_PATH, "r", encoding="utf-8") as f:
             db = json.load(f)
-        return _migrate(db)
+        db = _migrate(db)
+        _ensure_admin(db)
+        save_db(db)
+        return db
 
 
 def save_db(db):
@@ -173,6 +260,16 @@ def login_required(f):
     def decorated(*args, **kwargs):
         if "user_id" not in session:
             return jsonify({"error": "Non authentifié"}), 401
+        # Vérification du session_token (permet la révocation via kick)
+        db = load_db()
+        user = db["users"].get(session["user_id"])
+        if not user:
+            session.clear()
+            return jsonify({"error": "Non authentifié"}), 401
+        stored_token = user.get("session_token")
+        if stored_token and session.get("token") != stored_token:
+            session.clear()
+            return jsonify({"error": "Session expirée — veuillez vous reconnecter"}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -186,6 +283,11 @@ def admin_required(f):
         user = db["users"].get(session["user_id"])
         if not user or user.get("role") != "admin":
             return jsonify({"error": "Accès refusé"}), 403
+        # Vérification du session_token
+        stored_token = user.get("session_token")
+        if stored_token and session.get("token") != stored_token:
+            session.clear()
+            return jsonify({"error": "Session expirée — veuillez vous reconnecter"}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -284,20 +386,42 @@ def auth_me():
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
+    # Rate limiting anti brute-force
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
+    if _check_rate_limit(ip):
+        return jsonify({"error": "Trop de tentatives. Réessayez dans une minute."}), 429
+
     data = request.get_json()
     db = load_db()
     user = next(
-        (u for u in db["users"].values()
-         if u["username"] == data.get("username") and u["password"] == data.get("password")),
+        (u for u in db["users"].values() if u["username"] == data.get("username")),
         None
     )
-    if not user:
+    # check_password_hash est résistant aux timing attacks
+    if not user or not check_password_hash(user.get("password", ""), data.get("password", "")):
         return jsonify({"error": "Identifiants incorrects"}), 401
     if user["status"] == "pending":
         return jsonify({"error": "Compte en attente de validation admin"}), 403
     if user["status"] == "rejected":
         return jsonify({"error": "Compte rejeté par l'admin"}), 403
+    # Générer un session token unique et le stocker en DB
+    token = secrets.token_hex(32)
+    user["session_token"] = token
+    # Journaliser les connexions du super-admin
+    if user.get("superAdmin"):
+        ip      = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
+        ua      = request.headers.get("User-Agent", "inconnu")[:200]
+        db["admin_login_log"].insert(0, {
+            "time":      datetime.now(timezone.utc).isoformat(),
+            "userId":    user["id"],
+            "userName":  user["name"],
+            "ip":        ip,
+            "userAgent": ua
+        })
+        db["admin_login_log"] = db["admin_login_log"][:100]  # garder 100 entrées max
+    save_db(db)
     session["user_id"] = user["id"]
+    session["token"]   = token
     return jsonify({"user": safe_user(user)})
 
 
@@ -315,17 +439,21 @@ def auth_register():
     name     = data.get("name", "").strip()
     if not username or not password or not name:
         return jsonify({"error": "Nom, identifiant et mot de passe requis"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "Le mot de passe doit faire au moins 6 caractères"}), 400
     db = load_db()
     if any(u["username"] == username for u in db["users"].values()):
         return jsonify({"error": "Cet identifiant est déjà pris"}), 409
     new_id = "u" + secrets.token_hex(6)
     db["users"][new_id] = {
-        "id": new_id, "username": username, "password": password,
+        "id": new_id, "username": username,
+        "password": generate_password_hash(password),
         "name": name, "role": "user", "status": "pending", "points": 100,
         "buque": data.get("buque", ""),
         "nums":  data.get("nums",  ""),
         "proms": data.get("proms", ""),
-        "transactions": []
+        "transactions": [],
+        "session_token": None
     }
     save_db(db)
     return jsonify({"ok": True}), 201
@@ -341,11 +469,15 @@ def auth_change_password():
     user = db["users"].get(session["user_id"])
     if not user:
         return jsonify({"error": "Utilisateur introuvable"}), 404
-    if user["password"] != old_pass:
+    if not check_password_hash(user["password"], old_pass):
         return jsonify({"error": "Ancien mot de passe incorrect"}), 400
-    if len(new_pass) < 3:
-        return jsonify({"error": "Le nouveau mot de passe est trop court"}), 400
-    user["password"] = new_pass
+    if len(new_pass) < 6:
+        return jsonify({"error": "Le nouveau mot de passe est trop court (6 caractères min.)"}), 400
+    user["password"] = generate_password_hash(new_pass)
+    # Renouveler le session token (révoque les autres appareils)
+    new_token = secrets.token_hex(32)
+    user["session_token"] = new_token
+    session["token"] = new_token
     save_db(db)
     return jsonify({"ok": True})
 
@@ -697,12 +829,21 @@ def admin_reject_user(user_id):
 @admin_required
 def admin_toggle_role(user_id):
     db = load_db()
-    if session["user_id"] != "admin":
-        return jsonify({"error": "Seul le super-admin peut modifier les rôles"}), 403
-    if user_id not in db["users"] or user_id == "admin":
-        return jsonify({"error": "Impossible"}), 400
-    user = db["users"][user_id]
-    user["role"] = "admin" if user.get("role") != "admin" else "user"
+    me = db["users"].get(session["user_id"])
+    target = db["users"].get(user_id)
+    if not target:
+        return jsonify({"error": "Introuvable"}), 404
+    # Seul le super-admin peut modifier les rôles
+    if not me or not me.get("superAdmin"):
+        return jsonify({"error": "Réservé au super-admin"}), 403
+    # On ne peut pas modifier son propre rôle
+    if user_id == session["user_id"]:
+        return jsonify({"error": "Impossible de modifier son propre rôle"}), 400
+    # Empêcher de rétrograder le seul admin restant
+    nb_admins = sum(1 for u in db["users"].values() if u.get("role") == "admin")
+    if target.get("role") == "admin" and nb_admins <= 1:
+        return jsonify({"error": "Impossible de rétrograder le seul administrateur restant"}), 400
+    target["role"] = "admin" if target.get("role") != "admin" else "user"
     save_db(db)
     return jsonify({"ok": True})
 
@@ -739,19 +880,55 @@ def admin_grant_points(user_id):
 @app.route("/api/admin/users/<user_id>", methods=["DELETE"])
 @admin_required
 def admin_delete_user(user_id):
-    if user_id == "admin":
-        return jsonify({"error": "Impossible de supprimer le compte super-admin"}), 400
     db = load_db()
-    if user_id not in db["users"]:
+    target = db["users"].get(user_id)
+    if not target:
         return jsonify({"error": "Introuvable"}), 404
+    if target.get("role") == "admin":
+        return jsonify({"error": "Impossible de supprimer un compte administrateur"}), 400
     del db["users"][user_id]
     save_db(db)
     return jsonify({"ok": True})
 
 
+@app.route("/api/admin/users/<user_id>/kick", methods=["POST"])
+@admin_required
+def admin_kick_user(user_id):
+    """Déconnecte un utilisateur de tous ses appareils — réservé au super-admin."""
+    db = load_db()
+    me = db["users"].get(session["user_id"])
+    if not me or not me.get("superAdmin"):
+        return jsonify({"error": "Réservé au super-admin"}), 403
+    target = db["users"].get(user_id)
+    if not target:
+        return jsonify({"error": "Introuvable"}), 404
+    # Générer un nouveau token aléatoire : toutes les sessions existantes
+    # ont l'ancien token → elles seront immédiatement rejetées.
+    # (mettre None ne fonctionne pas car 'if stored_token' serait False)
+    target["session_token"] = secrets.token_hex(32)
+    save_db(db)
+    return jsonify({"ok": True, "message": f"'{target['name']}' déconnecté(e) de tous les appareils."})
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ADMIN – MARCHÉS
 # ──────────────────────────────────────────────────────────────────────────────
+@app.route("/api/admin/markets/<market_id>/rename", methods=["POST"])
+@admin_required
+def admin_rename_market(market_id):
+    data = request.get_json()
+    new_title = (data.get("title") or "").strip()
+    if not new_title:
+        return jsonify({"error": "Le titre ne peut pas être vide"}), 400
+    db = load_db()
+    m = next((m for m in db["markets"] if m["id"] == market_id), None)
+    if not m:
+        return jsonify({"error": "Introuvable"}), 404
+    m["title"] = new_title
+    save_db(db)
+    return jsonify({"ok": True, "title": new_title})
+
+
 @app.route("/api/admin/markets", methods=["POST"])
 @admin_required
 def admin_create_market():
@@ -961,11 +1138,20 @@ def admin_reorder_markets():
 @app.route("/api/admin/grants-log")
 @admin_required
 def admin_grants_log():
-    """Accessible uniquement par le super-admin (id='admin')."""
-    if session["user_id"] != "admin":
-        return jsonify({"error": "Réservé au super-admin"}), 403
+    """Journal des crédits, accessible à tous les admins."""
     db = load_db()
     return jsonify(db.get("admin_grants_log", []))
+
+
+@app.route("/api/admin/login-log")
+@admin_required
+def admin_login_log():
+    """Journal des connexions du super-admin — réservé au super-admin."""
+    db = load_db()
+    me = db["users"].get(session["user_id"])
+    if not me or not me.get("superAdmin"):
+        return jsonify({"error": "Réservé au super-admin"}), 403
+    return jsonify(db.get("admin_login_log", []))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
