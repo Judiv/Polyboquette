@@ -26,6 +26,20 @@ const state = {
 
 const PALETTE = ['#22c55e', '#ef4444', '#3b82f6', '#d946ef', '#f97316', '#eab308', '#06b6d4'];
 
+/**
+ * Échappe les caractères HTML spéciaux pour prévenir les injections XSS.
+ * À utiliser sur TOUTE donnée utilisateur insérée dans du HTML.
+ */
+function esc(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function getAdjustedProbabilities(market, betToExclude) {
     let totalShares = market.options.reduce((sum, opt) => sum + opt.shares, 0);
     if(betToExclude) totalShares -= betToExclude.amount;
@@ -582,7 +596,7 @@ const app = {
             ? '<p style="color:var(--text-secondary);text-align:center;">Aucune transaction.</p>'
             : txs.map(tx => formatTxRow(tx)).join('');
         ui.showModal(
-            `<i class='fa-solid fa-clock-rotate-left'></i> Historique de ${userName}`,
+            `<i class='fa-solid fa-clock-rotate-left'></i> Historique de ${esc(userName)}`,
             `<div style="max-height:400px; overflow-y:auto;">${rows}</div>`,
             () => {},
             "Fermer"
@@ -886,12 +900,12 @@ const app = {
         const market = state.data.markets.find(m => m.id === marketId);
         let opts = `<select id="modalResolveWinner" style="width:100%; padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary); margin-bottom:1rem;">
             <option value="cancelled">-- ANNULER (Remboursement Intégral) --</option>`;
-        market.options.forEach(o => { opts += `<option value="${o.id}">Déclarer Vainqueur : ${o.label}</option>` });
+        market.options.forEach(o => { opts += `<option value="${o.id}">Déclarer Vainqueur : ${esc(o.label)}</option>` });
         opts += `</select>`;
 
         ui.showModal(
             "<i class='fa-solid fa-gavel'></i> Clôturer le marché",
-            `<p style="margin-bottom: 1rem">Veuillez désigner l'issue finale pour <b>"${market.title}"</b>.</p>${opts}`,
+            `<p style="margin-bottom: 1rem">Veuillez désigner l'issue finale pour <b>"${esc(market.title)}"</b>.</p>${opts}`,
             () => {
                 const winnerId = document.getElementById('modalResolveWinner').value;
                 app.executeResolution(marketId, winnerId);
@@ -1079,17 +1093,17 @@ const app = {
                 const dateStr = new Date(log.time).toLocaleString();
                 let desc = '';
                 if(log.type === 'bet') {
-                    desc = `<span style="color:var(--yes-color); font-weight:bold;">Mise</span> de <strong>${log.amount} pts</strong> sur l'option <em>${log.optLabel}</em>`;
+                    desc = `<span style="color:var(--yes-color); font-weight:bold;">Mise</span> de <strong>${log.amount} pts</strong> sur l'option <em>${esc(log.optLabel)}</em>`;
                 } else if(log.type === 'cashout') {
-                    desc = `<span style="color:var(--error-color); font-weight:bold;">Revente</span> de <strong>${log.amount} pts</strong> sur l'option <em>${log.optLabel}</em> (Gain: ${log.cashoutVal} pts)`;
+                    desc = `<span style="color:var(--error-color); font-weight:bold;">Revente</span> de <strong>${log.amount} pts</strong> sur l'option <em>${esc(log.optLabel)}</em> (Gain: ${log.cashoutVal} pts)`;
                 } else {
-                    desc = log.type;
+                    desc = esc(log.type);
                 }
                 html += `
                     <div style="padding:0.75rem; border-radius:var(--radius-sm); border:1px solid var(--border-color); background:var(--bg-secondary);">
                         <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.4rem;">
-                            <strong style="color:var(--text-primary)">${log.userName}</strong>
-                            <span>${dateStr}</span>
+                            <strong style="color:var(--text-primary)">${esc(log.userName)}</strong>
+                            <span>${esc(dateStr)}</span>
                         </div>
                         <div style="font-size:0.95rem;">${desc}</div>
                     </div>
@@ -1252,14 +1266,104 @@ const app = {
             const col = l.amount > 0 ? 'var(--yes-color)' : 'var(--no-color)';
             return `<div class="user-row" style="flex-direction:column; align-items:flex-start; gap:0.2rem;">
                 <div style="display:flex; justify-content:space-between; width:100%">
-                    <span><strong>${l.adminName}</strong> → <strong>${l.targetName}</strong></span>
+                    <span><strong>${esc(l.adminName)}</strong> → <strong>${esc(l.targetName)}</strong></span>
                     <span style="color:${col}; font-weight:700">${l.amount > 0 ? '+' : ''}${l.amount} pts</span>
                 </div>
-                <div style="font-size:0.78rem; color:var(--text-secondary)">${ds}</div>
+                <div style="font-size:0.78rem; color:var(--text-secondary)">${esc(ds)}</div>
             </div>`;
         }).join('');
         ui.showModal('<i class="fa-solid fa-list"></i> Journal des crédits admin',
             `<div style="max-height:450px; overflow-y:auto;">${rows}</div>`, () => {}, 'Fermer');
+    },
+
+    loadActivityLog: async () => {
+        if (!state.useApi) {
+            // Mode local : agréger depuis les marchés
+            state.adminActivityLog = [];
+            state.data.markets.forEach(m => {
+                (m.actionLog || []).forEach(entry => {
+                    state.adminActivityLog.push({ marketId: m.id, marketTitle: m.title, ...entry });
+                });
+            });
+            state.adminActivityLog.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+        } else {
+            const container = document.getElementById('activityLogContainer');
+            if (container) container.innerHTML = '<p style="color:var(--text-secondary); text-align:center;"><i class="fa-solid fa-spinner fa-spin"></i> Chargement...</p>';
+            try {
+                state.adminActivityLog = await apiCall('GET', '/api/admin/activity-log');
+            } catch(e) {
+                state.adminActivityLog = [];
+                if (container) container.innerHTML = `<p style="color:var(--error-color); text-align:center;">Erreur : ${esc(e.message)}</p>`;
+                return;
+            }
+        }
+        app.filterActivityLog();
+    },
+
+    filterActivityLog: () => {
+        if (!state.adminActivityLog) return;
+        const typeFilter  = document.getElementById('activityTypeFilter')?.value  || 'all';
+        const marketFilter = document.getElementById('activityMarketFilter')?.value || 'all';
+        const userFilter  = (document.getElementById('activityUserFilter')?.value  || '').toLowerCase();
+
+        let filtered = state.adminActivityLog;
+        if (typeFilter   !== 'all') filtered = filtered.filter(e => e.type === typeFilter);
+        if (marketFilter !== 'all') filtered = filtered.filter(e => e.marketId === marketFilter);
+        if (userFilter) filtered = filtered.filter(e =>
+            (e.userName  || '').toLowerCase().includes(userFilter) ||
+            (e.adminName || '').toLowerCase().includes(userFilter)
+        );
+
+        const container = document.getElementById('activityLogContainer');
+        if (!container) return;
+
+        if (filtered.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-secondary); text-align:center; padding:1rem;">Aucune entrée trouvée.</p>';
+            return;
+        }
+
+        const TYPE_CFG = {
+            bet:     { label: 'Mise',         color: 'var(--yes-color)', icon: 'fa-arrow-up-from-bracket' },
+            cashout: { label: 'Revente',      color: 'var(--no-color)',  icon: 'fa-money-bill-transfer'   },
+            grant:   { label: 'Crédit admin', color: '#f97316',          icon: 'fa-coins'                 }
+        };
+
+        const rows = filtered.slice(0, 200).map(entry => {
+            const d = new Date(entry.time);
+            const dateStr = isNaN(d) ? esc(entry.time)
+                : d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+            const t = TYPE_CFG[entry.type] || { label: esc(entry.type), color: 'var(--text-secondary)', icon: 'fa-circle-dot' };
+
+            let detail = '';
+            if (entry.type === 'bet') {
+                detail = `<strong>${esc(entry.userName)}</strong> a misé <strong style="color:var(--yes-color)">${entry.amount} pts</strong> sur <em>${esc(entry.optLabel)}</em> &mdash; <span style="color:var(--text-secondary)">${esc(entry.marketTitle)}</span>`;
+            } else if (entry.type === 'cashout') {
+                detail = `<strong>${esc(entry.userName)}</strong> a revendu <strong>${entry.amount} pts</strong> sur <em>${esc(entry.optLabel)}</em> (remboursement: <strong style="color:var(--yes-color)">${entry.cashoutVal} pts</strong>) &mdash; <span style="color:var(--text-secondary)">${esc(entry.marketTitle)}</span>`;
+            } else if (entry.type === 'grant') {
+                const sign = entry.amount > 0 ? '+' : '';
+                const col  = entry.amount > 0 ? 'var(--yes-color)' : 'var(--no-color)';
+                detail = `<strong>${esc(entry.adminName || 'Admin')}</strong> → <strong>${esc(entry.userName)}</strong> : <span style="color:${col}; font-weight:700">${sign}${entry.amount} pts</span>`;
+            }
+
+            return `
+                <div style="display:flex; align-items:flex-start; gap:0.75rem; padding:0.55rem 0.75rem;
+                            border-radius:var(--radius-sm); border:1px solid var(--border-color);
+                            background:var(--bg-secondary); margin-bottom:0.35rem;">
+                    <span style="font-size:0.72rem; font-weight:700; color:${t.color}; min-width:76px;
+                                 padding:0.15rem 0.4rem; background:${t.color}22; border-radius:4px;
+                                 text-align:center; flex-shrink:0;">
+                        <i class="fa-solid ${t.icon}"></i> ${t.label}
+                    </span>
+                    <div style="flex:1; font-size:0.88rem;">${detail}</div>
+                    <span style="font-size:0.72rem; color:var(--text-secondary); white-space:nowrap; flex-shrink:0;">${dateStr}</span>
+                </div>`;
+        }).join('');
+
+        const overflow = filtered.length > 200
+            ? `<p style="text-align:center; font-size:0.8rem; color:var(--text-secondary); margin-top:0.5rem;">Affichage limité à 200 entrées sur ${filtered.length} résultats.</p>`
+            : '';
+
+        container.innerHTML = `<div style="max-height:520px; overflow-y:auto;">${rows}</div>${overflow}`;
     }
 };
 
@@ -1479,7 +1583,7 @@ function renderDashboard() {
                         <div style="margin-top:1rem; padding-top:1rem; border-top:2px dashed var(--border-color);">
                             <div class="leaderboard-row me">
                                 <span class="leaderboard-rank" style="width:2rem;">#${realRank}</span>
-                                <span class="leaderboard-name">${state.currentUser.name} <span style="font-size:0.75rem;opacity:0.7">(moi)</span></span>
+                                <span class="leaderboard-name">${esc(state.currentUser.name)} <span style="font-size:0.75rem;opacity:0.7">(moi)</span></span>
                                 <span class="leaderboard-pts">${myTotal} pts</span>
                             </div>
                         </div>
@@ -1496,7 +1600,7 @@ function renderDashboard() {
             return `
                 <div class="leaderboard-row ${isMe ? 'me' : ''}">
                     <span class="leaderboard-rank ${rankClass}" style="width:2.5rem; font-size:${i<3?'1.1rem':'0.85rem'}">${rank}</span>
-                    <span class="leaderboard-name">${u.name}${isMe ? ' <span style="font-size:0.75rem;opacity:0.7">(moi)</span>' : ''}</span>
+                    <span class="leaderboard-name">${esc(u.name)}${isMe ? ' <span style="font-size:0.75rem;opacity:0.7">(moi)</span>' : ''}</span>
                     <span class="leaderboard-pts">${u.points} pts</span>
                 </div>
             `;
@@ -1590,7 +1694,7 @@ function renderDashboard() {
         sortedOpts.slice(0, 3).forEach(opt => {
             probsHtml += `
                 <div style="display:flex; justify-content:space-between; margin-bottom:0.2rem; font-size:0.85rem; font-weight:600;">
-                    <span style="color:${opt.color}">${opt.label}</span>
+                    <span style="color:${opt.color}">${esc(opt.label)}</span>
                     <span style="color:var(--text-primary)">${probs[opt.id]}%</span>
                 </div>
             `;
@@ -1645,7 +1749,7 @@ function renderDashboard() {
                         <span class="market-volume"><i class="fa-solid fa-chart-simple"></i> Vol: ${m.volume} pts</span>
                     </div>
                 </div>
-                <h3 class="market-title">${m.title}${myBetBadge}</h3>
+                <h3 class="market-title">${esc(m.title)}${myBetBadge}</h3>
                 <div style="margin-top:0.5rem">${probsHtml}</div>
             </div>
         `;
@@ -1797,7 +1901,7 @@ function renderMarket(id) {
                         border: 1px solid ${isActive ? opt.color : 'transparent'};
                         opacity: ${isActive ? '1' : '0.7'}; cursor: pointer;"
                  onclick="app.selectOption('${opt.id}')">
-                ${opt.label} ${probs[opt.id]}%
+                ${esc(opt.label)} ${probs[opt.id]}%
                 ${statsLabel}
             </div>
         `;
@@ -1833,7 +1937,7 @@ function renderMarket(id) {
                 </div>
 
                 <button id="betBtn" class="btn-block" style="background: ${selectedOpt.color || 'var(--accent-color)'}; color: white; border-radius: var(--radius-md); font-weight: 600; box-shadow: 0 4px 10px rgba(0,0,0,0.15); text-shadow: 0 1px 2px rgba(0,0,0,0.3);" onclick="app.placeBet()">
-                    Miser sur ${selectedOpt.label}
+                    Miser sur ${esc(selectedOpt.label)}
                 </button>
                 
                 ${!state.currentUser ? '<p style="text-align:center; color: var(--no-color); font-size:0.9rem; margin-top:1rem">Connectez-vous pour miser.</p>' : ''}
@@ -1876,7 +1980,7 @@ function renderMarket(id) {
                     <div style="background: var(--bg-card); padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
                             <div>
-                                <span style="font-weight:bold; color:${opt.color}; text-shadow:0 1px 2px rgba(0,0,0,0.1)">${opt.label}</span>
+                                <span style="font-weight:bold; color:${opt.color}; text-shadow:0 1px 2px rgba(0,0,0,0.1)">${esc(opt.label)}</span>
                                 <span style="font-size:0.8rem; color:var(--text-secondary); margin-left:0.5rem">Mise: ${b.amount} pts</span>
                                 <span style="font-size:0.8rem; margin-left:0.5rem; color:${pnlColor}; font-weight:bold">P&L: ${pnl > 0 ? '+' : ''}${pnl} pts</span>
                             </div>
@@ -1918,11 +2022,11 @@ function renderMarket(id) {
                 <div class="comment-avatar"><i class="fa-solid fa-user"></i></div>
                 <div class="comment-content">
                     <div class="comment-header">
-                        <span class="comment-author">${c.userName}</span>
+                        <span class="comment-author">${esc(c.userName)}</span>
                         ${isAuthor ? '<span style="font-size:0.7rem; background:var(--bg-secondary); padding:0.1rem 0.4rem; border-radius:10px; font-weight:bold; margin-left:0.3rem;">Vous</span>' : ''}
-                        <span class="comment-time" style="margin-left:0.5rem;">${dateStr}</span>
+                        <span class="comment-time" style="margin-left:0.5rem;">${esc(dateStr)}</span>
                     </div>
-                    <div class="comment-text">${c.text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+                    <div class="comment-text">${esc(c.text)}</div>
                 </div>
             </div>
         `;
@@ -1948,7 +2052,7 @@ function renderMarket(id) {
                 <div class="chart-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">
                     <div style="display:flex; align-items:center; gap:1rem;">
                         <img src="${m.image}" alt="" style="width: 56px; height: 56px; border-radius: 8px; flex-shrink:0;">
-                        <h1 style="font-size: 1.3rem; line-height:1.3;">${m.title}${adminHistoryBtn}</h1>
+                        <h1 style="font-size: 1.3rem; line-height:1.3;">${esc(m.title)}${adminHistoryBtn}</h1>
                     </div>
                     <button class="chart-toggle-btn" onclick="app.toggleChart()" id="chartToggleBtn">
                         ${state.chartHidden ? '<i class="fa-solid fa-chart-line"></i> Afficher' : '<i class="fa-solid fa-eye-slash"></i> Masquer'} le graphe
@@ -1987,11 +2091,11 @@ function renderAdmin() {
 
     let pendingUsers = '';
     Object.values(state.data.users).filter(u => u.status === 'pending').forEach(u => {
-        let details = `Buque: ${u.buque || '-'}, Num's: ${u.nums || '-'}, Prom's: ${u.proms || '-'}`;
+        let details = `Buque: ${esc(u.buque) || '-'}, Num's: ${esc(u.nums) || '-'}, Prom's: ${esc(u.proms) || '-'}`;
         pendingUsers += `
             <div class="user-row" style="border-color: #ff9800;">
                 <div>
-                    <span style="font-weight: 600">${u.name} (@${u.username})</span> <br>
+                    <span style="font-weight: 600">${esc(u.name)} (@${esc(u.username)})</span> <br>
                     <span style="font-size: 0.8rem; color: var(--text-secondary)">${details}</span>
                 </div>
                 <div>
@@ -2034,22 +2138,22 @@ function renderAdmin() {
 
     let activeUsers = '';
     activeUsersList.forEach(u => {
-        let details = `Buque: ${u.buque || '-'}, Num's: ${u.nums || '-'}, Prom's: ${u.proms || '-'}`;
+        let details = `Buque: ${esc(u.buque) || '-'}, Num's: ${esc(u.nums) || '-'}, Prom's: ${esc(u.proms) || '-'}`;
         activeUsers += `
             <div class="user-row">
                 <div>
-                    <span style="font-weight: 600">${u.name} ${u.role === 'admin' ? '<span style="font-size:0.7rem; background:var(--accent-transparent); padding:0.1rem 0.4rem; border-radius:10px; color:var(--accent-color); margin-left:0.3rem;">ADMIN</span>' : ''}</span>
+                    <span style="font-weight: 600">${esc(u.name)} ${u.role === 'admin' ? '<span style="font-size:0.7rem; background:var(--accent-transparent); padding:0.1rem 0.4rem; border-radius:10px; color:var(--accent-color); margin-left:0.3rem;">ADMIN</span>' : ''}</span>
                     <span style="color: var(--text-secondary); margin-left:1rem"><i class="fa-solid fa-coins"></i> ${Math.floor(u.points)} pts</span>
                     <br><span style="font-size: 0.8rem; color: var(--text-secondary)">${details}</span>
                 </div>
                 <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:flex-end;">
                     <button class="btn-outline" onclick="app.grantPoints('${u.id}')"><i class="fa-solid fa-coins"></i> Points</button>
-                    <button class="btn-outline" onclick="app.viewUserHistory('${u.id}', '${u.name}')"><i class="fa-solid fa-clock-rotate-left"></i></button>
+                    <button class="btn-outline" onclick="app.viewUserHistory('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-clock-rotate-left"></i></button>
                     ${state.currentUser.id === 'admin' && u.id !== 'admin' ? 
                         `<button class="btn-outline" onclick="app.toggleAdmin('${u.id}')"><i class="fa-solid fa-star"></i> ${u.role === 'admin' ? 'Retirer Admin' : 'Nommer Admin'}</button>` 
                         : ''}
                     ${state.currentUser.id === 'admin' && u.id !== 'admin' ?
-                        `<button class="btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="app.deleteUser('${u.id}', '${u.name}')"><i class="fa-solid fa-user-slash"></i></button>`
+                        `<button class="btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="app.deleteUser('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-user-slash"></i></button>`
                         : ''}
                 </div>
             </div>
@@ -2075,7 +2179,7 @@ function renderAdmin() {
 
         adminMarketsHtml += `
             <div class="user-row">
-                <div style="flex:1;"><span style="font-weight: 600">${m.title}</span> ${statusBadge}</div>
+                <div style="flex:1;"><span style="font-weight: 600">${esc(m.title)}</span> ${statusBadge}</div>
                 <div>${btns}</div>
             </div>
         `;
@@ -2087,9 +2191,9 @@ function renderAdmin() {
         pendingProposalsHtml += `
             <div class="user-row" style="border-color: #3b82f6; flex-direction:column; align-items:stretch; gap: 0.5rem;">
                 <div>
-                    <span style="font-weight: 600">${p.title}</span> <span style="font-size:0.8rem; color:var(--text-secondary)">- par ${p.authorName}</span>
+                    <span style="font-weight: 600">${esc(p.title)}</span> <span style="font-size:0.8rem; color:var(--text-secondary)">- par ${esc(p.authorName)}</span>
                 </div>
-                <div style="font-size: 0.85rem;">Choix: ${p.choices.join(', ')}</div>
+                <div style="font-size: 0.85rem;">Choix: ${esc(p.choices.join(', '))}</div>
                 <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:0.5rem;">
                     <button class="btn-outline" onclick="app.rejectProposal('${p.id}')">Rejeter</button>
                     <button class="btn-primary" onclick="app.approveProposal('${p.id}')">Approuver & Créer Marché</button>
@@ -2117,7 +2221,7 @@ function renderAdmin() {
             if (ncReqs.length === 0) return '';
             const ncHtml = ncReqs.map(r => `
                 <div class="user-row" style="border-color:#a855f7; flex-direction:column; align-items:stretch; gap:0.4rem;">
-                    <div><strong>${r.oldName}</strong> <i class="fa-solid fa-arrow-right" style="color:var(--text-secondary)"></i> <strong style="color:#a855f7">${r.newName}</strong></div>
+                    <div><strong>${esc(r.oldName)}</strong> <i class="fa-solid fa-arrow-right" style="color:var(--text-secondary)"></i> <strong style="color:#a855f7">${esc(r.newName)}</strong></div>
                     <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
                         <button class="btn-outline" onclick="app.rejectNameChange('${r.id}')">Rejeter</button>
                         <button class="btn-primary" style="background:#a855f7" onclick="app.approveNameChange('${r.id}')">Approuver</button>
@@ -2160,6 +2264,43 @@ function renderAdmin() {
                 <button class="btn-outline" style="border-color:#ef4444; color:#ef4444" onclick="app.viewGrantsLog()"><i class="fa-solid fa-eye"></i> Voir le journal</button>
             </div>
         </div>` : ''}
+
+        <div class="admin-card" style="background:rgba(6,182,212,0.06); border-color:#06b6d4;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+                <h2 class="admin-header" style="color:#06b6d4; margin:0;"><i class="fa-solid fa-scroll"></i> Journal d'activité global</h2>
+                <button class="btn-outline" style="border-color:#06b6d4; color:#06b6d4;" onclick="app.loadActivityLog()">
+                    <i class="fa-solid fa-arrows-rotate"></i> Actualiser
+                </button>
+            </div>
+            <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;
+                        background:var(--bg-secondary); padding:0.75rem;
+                        border-radius:var(--radius-md); border:1px solid var(--border-color);">
+                <select id="activityTypeFilter" onchange="app.filterActivityLog()"
+                        style="padding:0.4rem; border-radius:var(--radius-sm); border:1px solid var(--border-color);
+                               background:var(--bg-card); color:var(--text-primary); font-size:0.85rem;">
+                    <option value="all">Tous types</option>
+                    <option value="bet">Mises uniquement</option>
+                    <option value="cashout">Reventes uniquement</option>
+                    <option value="grant">Crédits admin uniquement</option>
+                </select>
+                <select id="activityMarketFilter" onchange="app.filterActivityLog()"
+                        style="padding:0.4rem; border-radius:var(--radius-sm); border:1px solid var(--border-color);
+                               background:var(--bg-card); color:var(--text-primary); font-size:0.85rem; max-width:220px;">
+                    <option value="all">Tous les marchés</option>
+                    ${state.data.markets.map(m => `<option value="${m.id}">${esc(m.title)}</option>`).join('')}
+                </select>
+                <input type="text" id="activityUserFilter" placeholder="Filtrer par utilisateur..."
+                       oninput="app.filterActivityLog()"
+                       style="padding:0.4rem 0.75rem; border-radius:var(--radius-sm);
+                              border:1px solid var(--border-color); background:var(--bg-card);
+                              color:var(--text-primary); font-size:0.85rem; flex:1; min-width:150px;">
+            </div>
+            <div id="activityLogContainer">
+                <p style="color:var(--text-secondary); text-align:center; padding:1rem;">
+                    <i class="fa-solid fa-hand-pointer"></i> Cliquez sur "Actualiser" pour charger les logs.
+                </p>
+            </div>
+        </div>
     `;
 }
 
@@ -2334,11 +2475,11 @@ function renderProfile() {
         <div class="admin-card">
             <h2 class="admin-header"><i class="fa-solid fa-id-card"></i> Informations</h2>
             <div class="user-row" style="flex-direction:column; align-items:flex-start; gap:0.4rem;">
-                <div><strong>Nom :</strong> ${u.name}</div>
-                <div><strong>Identifiant :</strong> ${u.username}</div>
-                <div><strong>Bu\u00e8que :</strong> ${u.buque || '—'}</div>
-                <div><strong>Promotion :</strong> ${u.proms || '—'}</div>
-                <div><strong>Num\u00e9ro :</strong> ${u.nums || '—'}</div>
+                <div><strong>Nom :</strong> ${esc(u.name)}</div>
+                <div><strong>Identifiant :</strong> ${esc(u.username)}</div>
+                <div><strong>Bu\u00e8que :</strong> ${esc(u.buque) || '—'}</div>
+                <div><strong>Promotion :</strong> ${esc(u.proms) || '—'}</div>
+                <div><strong>Num\u00e9ro :</strong> ${esc(u.nums) || '—'}</div>
                 <div><strong>R\u00f4le :</strong> <span style="color: ${u.role === 'admin' ? 'var(--accent-color)' : 'var(--text-secondary)'}">${u.role === 'admin' ? '⭐ Administrateur' : 'Membre'}</span></div>
                 <div style="margin-top:0.5rem; font-size:1.3rem; font-weight:700; color:var(--accent-color)">
                     <i class="fa-solid fa-coins"></i> ${Math.floor(u.points)} points
@@ -2392,8 +2533,8 @@ function formatTxRow(tx) {
     return `
         <div class="user-row" style="flex-direction:row; justify-content:space-between; align-items:center; gap:1rem;">
             <div>
-                <div style="font-weight:600; font-size:0.95rem;">${tx.desc}</div>
-                <div style="font-size:0.78rem; color:var(--text-secondary); margin-top:0.1rem;">${dateStr}</div>
+                <div style="font-weight:600; font-size:0.95rem;">${esc(tx.desc)}</div>
+                <div style="font-size:0.78rem; color:var(--text-secondary); margin-top:0.1rem;">${esc(dateStr)}</div>
             </div>
             <div>${amountHtml}</div>
         </div>
