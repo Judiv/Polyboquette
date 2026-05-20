@@ -21,6 +21,9 @@ const state = {
     leaderboard: [],
     canClaim: false,
     dashTab: 'markets',   // 'markets' | 'leaderboard'
+    adminTab: 'proposals_registrations', // 'proposals_registrations' | 'active_markets' | 'members_points' | 'logs'
+    logsCurrentPage: 1,
+    logsPerPage: 200,
     collapsedCategories: JSON.parse(localStorage.getItem('collapsedCategories') || '{}')
 };
 
@@ -188,9 +191,10 @@ async function refreshServerData() {
     if(lbRes && lbRes.ok) state.leaderboard = await lbRes.json();
 
     if(state.currentUser?.role === 'admin') {
-        const [uRes, ncRes] = await Promise.all([
+        const [uRes, ncRes, prRes] = await Promise.all([
             fetch('/api/admin/users').catch(()=>null),
-            fetch('/api/admin/name-changes').catch(()=>null)
+            fetch('/api/admin/name-changes').catch(()=>null),
+            fetch('/api/admin/password-resets').catch(()=>null)
         ]);
         if(uRes && uRes.ok) {
             const users = await uRes.json();
@@ -198,6 +202,7 @@ async function refreshServerData() {
             users.forEach(u => state.data.users[u.id] = u);
         }
         if(ncRes && ncRes.ok) state.data.nameChangeRequests = await ncRes.json();
+        if(prRes && prRes.ok) state.data.passwordResetRequests = await prRes.json();
     } else if (state.currentUser) {
         state.data.users = {};
         state.data.users[state.currentUser.id] = state.currentUser;
@@ -459,6 +464,22 @@ const app = {
         app.navigate('dashboard');
     },
 
+    forgotPassword: async () => {
+        const username = prompt("Entrez votre nom d'utilisateur :");
+        if (!username) return;
+        
+        if (state.useApi) {
+            try {
+                await apiCall('POST', '/api/auth/forgot-password', { username });
+                ui.showToast("Demande envoyée ! Un admin va s'en occuper.");
+            } catch(e) {
+                ui.showToast("Erreur lors de la demande", 'error');
+            }
+        } else {
+            ui.showToast("Mode local : Demandez à l'admin.", 'error');
+        }
+    },
+
     doRegister: async () => {
         const data = {
             username: document.getElementById('regUsername').value,
@@ -466,7 +487,8 @@ const app = {
             name: document.getElementById('regName').value,
             buque: document.getElementById('regBuque').value,
             nums: document.getElementById('regNums').value,
-            proms: document.getElementById('regProms').value
+            proms: document.getElementById('regProms').value,
+            email: document.getElementById('regEmail') ? document.getElementById('regEmail').value : ""
         };
         
         if(!data.username || !data.password || !data.name) return ui.showToast("Nom, identifiant et pass requis.", "error");
@@ -582,6 +604,9 @@ const app = {
     },
 
     viewUserHistory: async (userId, userName) => {
+        if (!userName) {
+            userName = state.data.users[userId]?.name || "Utilisateur";
+        }
         let txs = [];
         if (state.useApi) {
             try {
@@ -1114,6 +1139,26 @@ const app = {
         ui.showModal(`Historique: ${m.title}`, html, () => ui.closeModal(true), "Fermer");
     },
 
+    changeEmail: async () => {
+        const password = document.getElementById('emailPass')?.value;
+        const newEmail = document.getElementById('newEmail')?.value;
+
+        if (!password) return ui.showToast('Veuillez entrer votre mot de passe.', 'error');
+
+        if (state.useApi) {
+            try {
+                const res = await apiCall('POST', '/api/auth/change-email', { password, newEmail });
+                state.currentUser = res.user;
+                ui.showToast('Adresse e-mail mise à jour !');
+                app.navigate('profile');
+            } catch(e) {
+                ui.showToast(e.message, 'error');
+            }
+        } else {
+            ui.showToast('Non disponible en local', 'error');
+        }
+    },
+
     changePassword: async () => {
         const oldPass = document.getElementById('oldPass')?.value;
         const newPass = document.getElementById('newPass')?.value;
@@ -1155,6 +1200,9 @@ const app = {
     },
 
     deleteUser: async (userId, userName) => {
+        if (!userName) {
+            userName = state.data.users[userId]?.name || "cet utilisateur";
+        }
         if (!confirm(`Supprimer définitivement le compte de "${userName}" ? Cette action est irréversible.`)) return;
         if (state.useApi) {
             try {
@@ -1251,6 +1299,24 @@ const app = {
         app.navigate('admin');
     },
 
+    adminResetPassword: async (reqId) => {
+        const newPass = prompt("Entrez le nouveau mot de passe (min. 6 caractères) :");
+        if (!newPass) return;
+        if (newPass.length < 6) return ui.showToast("Mot de passe trop court", "error");
+
+        if (state.useApi) {
+            try {
+                await apiCall('POST', `/api/admin/password-resets/${reqId}/approve`, { newPassword: newPass });
+                ui.showToast("Mot de passe réinitialisé !");
+                app.navigate('admin');
+            } catch(e) {
+                ui.showToast(e.message, "error");
+            }
+        } else {
+            ui.showToast("Non disponible en local", "error");
+        }
+    },
+
     viewGrantsLog: async () => {
         let logs = [];
         if (state.useApi) {
@@ -1301,6 +1367,9 @@ const app = {
     },
 
     kickUser: async (userId, userName) => {
+        if (!userName) {
+            userName = state.data.users[userId]?.name || "Utilisateur";
+        }
         ui.showModal(
             `<i class='fa-solid fa-plug-circle-xmark' style='color:#f97316'></i> Déconnecter partout`,
             `<p>Déconnecter <strong>${esc(userName)}</strong> de tous ses appareils ?<br><span style="font-size:0.85rem; color:var(--text-secondary)">Sa prochaine requête lui demandera de se reconnecter.</span></p>`,
@@ -1318,6 +1387,10 @@ const app = {
     },
 
     renameMarket: (marketId, currentTitle) => {
+        if (!currentTitle) {
+            const m = state.data.markets.find(x => x.id === marketId);
+            currentTitle = m ? m.title : "";
+        }
         ui.showModal(
             `<i class='fa-solid fa-pen' style='color:var(--accent-color)'></i> Modifier le titre`,
             `<div style="display:flex;flex-direction:column;gap:0.75rem;">
@@ -1343,6 +1416,27 @@ const app = {
             'Enregistrer'
         );
         setTimeout(() => document.getElementById('renameMarketInput')?.select(), 100);
+    },
+
+    setAdminTab: (tabName) => {
+        state.adminTab = tabName;
+        app.renderCurrentView();
+        if (tabName === 'logs') {
+            // Automatically load/refresh logs when clicking the tab
+            app.loadActivityLog();
+        }
+    },
+
+    changeLogsPage: (direction) => {
+        const total = state.adminActivityLog ? state.adminActivityLog.length : 0;
+        const totalPages = Math.ceil(total / state.logsPerPage) || 1;
+        state.logsCurrentPage = Math.max(1, Math.min(totalPages, state.logsCurrentPage + direction));
+        app.filterActivityLog();
+    },
+
+    handleActivityFilterChange: () => {
+        state.logsCurrentPage = 1;
+        app.filterActivityLog();
     },
 
     loadLoginLog: async () => {
@@ -1422,12 +1516,24 @@ const app = {
         }
 
         const TYPE_CFG = {
-            bet:     { label: 'Mise',         color: 'var(--yes-color)', icon: 'fa-arrow-up-from-bracket' },
-            cashout: { label: 'Revente',      color: 'var(--no-color)',  icon: 'fa-money-bill-transfer'   },
-            grant:   { label: 'Crédit admin', color: '#f97316',          icon: 'fa-coins'                 }
+            bet:          { label: 'Mise',         color: 'var(--yes-color)', icon: 'fa-arrow-up-from-bracket' },
+            cashout:      { label: 'Revente',      color: 'var(--no-color)',  icon: 'fa-money-bill-transfer'   },
+            grant:        { label: 'Crédit admin', color: '#f97316',          icon: 'fa-coins'                 },
+            admin_action: { label: 'Action admin', color: '#a855f7',          icon: 'fa-user-shield'           }
         };
 
-        const rows = filtered.slice(0, 200).map(entry => {
+        const totalPages = Math.ceil(filtered.length / state.logsPerPage) || 1;
+        if (state.logsCurrentPage > totalPages) {
+            state.logsCurrentPage = totalPages;
+        }
+        if (state.logsCurrentPage < 1) {
+            state.logsCurrentPage = 1;
+        }
+
+        const startIdx = (state.logsCurrentPage - 1) * state.logsPerPage;
+        const pageLogs = filtered.slice(startIdx, startIdx + state.logsPerPage);
+
+        const rows = pageLogs.map(entry => {
             const d = new Date(entry.time);
             const dateStr = isNaN(d) ? esc(entry.time)
                 : d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
@@ -1442,6 +1548,11 @@ const app = {
                 const sign = entry.amount > 0 ? '+' : '';
                 const col  = entry.amount > 0 ? 'var(--yes-color)' : 'var(--no-color)';
                 detail = `<strong>${esc(entry.adminName || 'Admin')}</strong> → <strong>${esc(entry.userName)}</strong> : <span style="color:${col}; font-weight:700">${sign}${entry.amount} pts</span>`;
+            } else if (entry.type === 'admin_action') {
+                detail = `<strong>${esc(entry.adminName || 'Admin')}</strong> a effectué : <strong>${esc(entry.details)}</strong>`;
+                if (entry.marketTitle) {
+                    detail += ` &mdash; <span style="color:var(--text-secondary)">${esc(entry.marketTitle)}</span>`;
+                }
             }
 
             return `
@@ -1458,11 +1569,28 @@ const app = {
                 </div>`;
         }).join('');
 
-        const overflow = filtered.length > 200
-            ? `<p style="text-align:center; font-size:0.8rem; color:var(--text-secondary); margin-top:0.5rem;">Affichage limité à 200 entrées sur ${filtered.length} résultats.</p>`
-            : '';
+        let paginationHtml = '';
+        if (totalPages > 1) {
+            paginationHtml = `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem; padding:0.5rem; background:var(--bg-secondary); border-radius:var(--radius-md); border:1px solid var(--border-color);">
+                    <button class="btn-outline" style="padding:0.4rem 0.8rem; font-size:0.85rem; cursor:pointer;" 
+                            ${state.logsCurrentPage === 1 ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''} 
+                            onclick="app.changeLogsPage(-1)">
+                        <i class="fa-solid fa-chevron-left"></i> Précédent
+                    </button>
+                    <span style="font-size:0.85rem; font-weight:600; color:var(--text-secondary);">
+                        Page ${state.logsCurrentPage} sur ${totalPages} (${filtered.length} logs)
+                    </span>
+                    <button class="btn-outline" style="padding:0.4rem 0.8rem; font-size:0.85rem; cursor:pointer;" 
+                            ${state.logsCurrentPage === totalPages ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''} 
+                            onclick="app.changeLogsPage(1)">
+                        Suivant <i class="fa-solid fa-chevron-right"></i>
+                    </button>
+                </div>
+            `;
+        }
 
-        container.innerHTML = `<div style="max-height:520px; overflow-y:auto;">${rows}</div>${overflow}`;
+        container.innerHTML = `<div style="max-height:520px; overflow-y:auto;">${rows}</div>${paginationHtml}`;
     }
 };
 
@@ -1554,6 +1682,7 @@ function renderLogin() {
                 <button class="btn-primary" style="width: 100%" onclick="app.doLogin()">Se connecter</button>
             </div>
             <p style="text-align: center; margin-top: 1rem; font-size: 0.9rem;">Pas de compte ? <a href="#" onclick="app.navigate('register')">S'inscrire</a></p>
+            <p style="text-align: center; margin-top: 0.5rem; font-size: 0.9rem;"><a href="#" onclick="app.forgotPassword()" style="color: var(--text-secondary);">Mot de passe oublié ?</a></p>
         </div>
     `;
 }
@@ -1572,6 +1701,8 @@ function renderRegister() {
                 </div>
                 <label>Nom d'utilisateur (Login) *</label>
                 <input type="text" id="regUsername" placeholder="Nom+Prénom ou Bucque" style="width:100%; padding:0.75rem; border:1px solid var(--border-color); border-radius:var(--radius-md); background:var(--bg-secondary); color:var(--text-primary); margin-bottom:0.75rem;">
+                <label>E-mail <span style="font-size: 0.8em; color: var(--text-secondary); font-weight: normal;">(pratique si t'oublies ton mot de passe)</span></label>
+                <input type="email" id="regEmail" placeholder="nom@exemple.com" style="width:100%; padding:0.75rem; border:1px solid var(--border-color); border-radius:var(--radius-md); background:var(--bg-secondary); color:var(--text-primary); margin-bottom:0.75rem;">
                 <label>Mot de passe (Login) *</label>
                 <input type="password" id="regPass" style="width:100%; padding:0.75rem; border:1px solid var(--border-color); border-radius:var(--radius-md); background:var(--bg-secondary); color:var(--text-primary); margin-bottom:1.5rem;">
                 <button class="btn-primary" style="width: 100%" onclick="app.doRegister()">S'inscrire (Nécessite Validation)</button>
@@ -1807,7 +1938,7 @@ function renderDashboard() {
                         <i class="fa-solid fa-ellipsis-vertical"></i>
                     </button>
                     <div class="dropdown-content">
-                        <a class="dropdown-item" onclick="app.renameMarket('${m.id}', '${esc(m.title).replace(/'/g, '&#39;')}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-pen"></i> Modifier le titre</a>
+                        <a class="dropdown-item" onclick="app.renameMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-pen"></i> Modifier le titre</a>
                         ${m.status === 'open' ? `<a class="dropdown-item" onclick="app.togglePauseModal('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-pause"></i> Mettre en pause</a>` : ''}
                         ${m.status === 'paused' ? `<a class="dropdown-item" onclick="app.resumeMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-play"></i> Reprendre</a>` : ''}
                         ${m.status !== 'resolved' ? `<a class="dropdown-item" onclick="app.adminResolveMarket('${m.id}'); this.parentElement.parentElement.classList.remove('show');"><i class="fa-solid fa-flag-checkered"></i> Clôturer</a>` : ''}
@@ -2189,6 +2320,7 @@ function renderMarket(id) {
 function renderAdmin() {
     if (!state.currentUser || state.currentUser.role !== 'admin') return `<h1>Accès Refusé.</h1>`;
 
+    // 1. Calculations for Proposals & Inscriptions Tab
     let pendingUsers = '';
     Object.values(state.data.users).filter(u => u.status === 'pending').forEach(u => {
         let details = `Buque: ${esc(u.buque) || '-'}, Num's: ${esc(u.nums) || '-'}, Prom's: ${esc(u.proms) || '-'}`;
@@ -2206,9 +2338,78 @@ function renderAdmin() {
         `;
     });
 
+    let pendingProposalsHtml = '';
+    const pendingProps = state.data.proposals.filter(p => p.status === 'pending');
+    pendingProps.forEach(p => {
+        pendingProposalsHtml += `
+            <div class="user-row" style="border-color: #3b82f6; flex-direction:column; align-items:stretch; gap: 0.5rem;">
+                <div>
+                    <span style="font-weight: 600">${esc(p.title)}</span> <span style="font-size:0.8rem; color:var(--text-secondary)">- par ${esc(p.authorName)}</span>
+                </div>
+                <div style="font-size: 0.85rem;">Choix: ${esc(p.choices.join(', '))}</div>
+                <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:0.5rem;">
+                    <button class="btn-outline" onclick="app.rejectProposal('${p.id}')">Rejeter</button>
+                    <button class="btn-primary" onclick="app.approveProposal('${p.id}')">Approuver & Créer Marché</button>
+                </div>
+            </div>
+        `;
+    });
+
+    const ncReqs = state.data.nameChangeRequests || [];
+    let ncHtml = '';
+    if (ncReqs.length > 0) {
+        ncHtml = ncReqs.map(r => `
+            <div class="user-row" style="border-color:#a855f7; flex-direction:column; align-items:stretch; gap:0.4rem;">
+                <div><strong>${esc(r.oldName)}</strong> <i class="fa-solid fa-arrow-right" style="color:var(--text-secondary)"></i> <strong style="color:#a855f7">${esc(r.newName)}</strong></div>
+                <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+                    <button class="btn-outline" onclick="app.rejectNameChange('${r.id}')">Rejeter</button>
+                    <button class="btn-primary" style="background:#a855f7" onclick="app.approveNameChange('${r.id}')">Approuver</button>
+                </div>
+            </div>`).join('');
+    }
+
+    const prReqs = state.data.passwordResetRequests || [];
+    let prHtml = '';
+    if (prReqs.length > 0) {
+        prHtml = prReqs.map(r => `
+            <div class="user-row" style="border-color:#ef4444; flex-direction:column; align-items:stretch; gap:0.4rem;">
+                <div><strong>Mot de passe oublié :</strong> ${esc(r.userName)} (@${esc(r.username)})</div>
+                <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+                    <button class="btn-primary" style="background:#ef4444" onclick="app.adminResetPassword('${r.id}')">🔑 Traiter</button>
+                </div>
+            </div>`).join('');
+    }
+
+    // 2. Calculations for Active Markets Tab
+    let adminMarketsHtml = '';
+    state.data.markets.forEach(m => {
+        let statusBadge = '';
+        if(m.status === 'resolved') statusBadge = `<span style="font-weight:bold; font-size: 0.8rem; padding:0.2rem 0.5rem; background:var(--bg-secondary); border-radius:4px; color:var(--text-secondary); margin-left:1rem;">CLÔTURÉ</span>`;
+        else if(m.status === 'paused') statusBadge = `<span style="font-weight:bold; font-size: 0.8rem; padding:0.2rem 0.5rem; background:var(--accent-transparent); border-radius:4px; color:var(--accent-color); border: 1px solid var(--accent-color); margin-left:1rem;">EN PAUSE</span>`;
+        
+        let btns = '';
+        if (m.status === 'open') {
+            btns = `<button class="btn-outline" style="margin-right: 0.5rem" onclick="app.togglePauseModal('${m.id}')">Bloquer</button>
+                    <button class="btn-primary" onclick="app.adminResolveMarket('${m.id}')">Clôturer</button>`;
+        } else if (m.status === 'paused') {
+            btns = `<button class="btn-outline" style="margin-right: 0.5rem" onclick="app.resumeMarket('${m.id}')">Débloquer</button>
+                    <button class="btn-primary" onclick="app.adminResolveMarket('${m.id}')">Clôturer</button>`;
+        } else if (m.status === 'resolved') {
+            btns = `<button class="btn-outline" style="color:var(--error-color); border-color:var(--error-color);" onclick="app.adminDeleteMarket('${m.id}')"><i class="fa-solid fa-trash"></i> Supprimer</button>`;
+        }
+
+        adminMarketsHtml += `
+            <div class="user-row">
+                <div style="flex:1;"><span style="font-weight: 600">${esc(m.title)}</span> ${statusBadge}</div>
+                <div>${btns}</div>
+            </div>
+        `;
+    });
+
+    // 3. Calculations for Members & Points Tab
     let activeUsersList = Object.values(state.data.users).filter(u => u.status !== 'pending');
     
-    // Sort
+    // Sort active users
     const sortBy = state.adminSortBy || 'role';
     activeUsersList.sort((a, b) => {
         if (sortBy === 'role') {
@@ -2225,7 +2426,7 @@ function renderAdmin() {
         return 0;
     });
 
-    // Filter
+    // Filter active users
     const search = (state.adminSearch || '').toLowerCase();
     if (search) {
         activeUsersList = activeUsersList.filter(u => 
@@ -2248,176 +2449,172 @@ function renderAdmin() {
                 </div>
                 <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:flex-end;">
                     <button class="btn-outline" onclick="app.grantPoints('${u.id}')"><i class="fa-solid fa-coins"></i> Points</button>
-                    <button class="btn-outline" onclick="app.viewUserHistory('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-clock-rotate-left"></i></button>
+                    <button class="btn-outline" onclick="app.viewUserHistory('${u.id}')"><i class="fa-solid fa-clock-rotate-left"></i></button>
                     ${state.currentUser.superAdmin ?
-                        `<button class="btn-outline" style="color:#f97316;border-color:#f97316" title="Déconnecter de tous les appareils" onclick="app.kickUser('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-plug-circle-xmark"></i></button>` : ''}
+                        `<button class="btn-outline" style="color:#f97316;border-color:#f97316" title="Déconnecter de tous les appareils" onclick="app.kickUser('${u.id}')"><i class="fa-solid fa-plug-circle-xmark"></i></button>` : ''}
                     ${state.currentUser.superAdmin && u.id !== state.currentUser.id ? 
                         `<button class="btn-outline" onclick="app.toggleAdmin('${u.id}')"><i class="fa-solid fa-star"></i> ${u.role === 'admin' ? 'Retirer Admin' : 'Nommer Admin'}</button>` 
                         : ''}
                     ${state.currentUser.role === 'admin' && u.role !== 'admin' ?
-                        `<button class="btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="app.deleteUser('${u.id}', '${esc(u.name)}')"><i class="fa-solid fa-user-slash"></i></button>`
+                        `<button class="btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="app.deleteUser('${u.id}')"><i class="fa-solid fa-user-slash"></i></button>`
                         : ''}
                 </div>
             </div>
         `;
     });
 
-    let adminMarketsHtml = '';
-    state.data.markets.forEach(m => {
-        let statusBadge = '';
-        if(m.status === 'resolved') statusBadge = `<span style="font-weight:bold; font-size: 0.8rem; padding:0.2rem 0.5rem; background:var(--bg-secondary); border-radius:4px; color:var(--text-secondary); margin-left:1rem;">CLÔTURÉ</span>`;
-        else if(m.status === 'paused') statusBadge = `<span style="font-weight:bold; font-size: 0.8rem; padding:0.2rem 0.5rem; background:var(--accent-transparent); border-radius:4px; color:var(--accent-color); border: 1px solid var(--accent-color); margin-left:1rem;">EN PAUSE</span>`;
-        
-        let btns = '';
-        if (m.status === 'open') {
-            btns = `<button class="btn-outline" style="margin-right: 0.5rem" onclick="app.togglePause('${m.id}')">Bloquer</button>
-                    <button class="btn-primary" onclick="app.resolveMarketPrompt('${m.id}')">Clôturer</button>`;
-        } else if (m.status === 'paused') {
-            btns = `<button class="btn-outline" style="margin-right: 0.5rem" onclick="app.togglePause('${m.id}')">Débloquer</button>
-                    <button class="btn-primary" onclick="app.resolveMarketPrompt('${m.id}')">Clôturer</button>`;
-        } else if (m.status === 'resolved') {
-            btns = `<button class="btn-outline" style="color:var(--error-color); border-color:var(--error-color);" onclick="app.deleteMarket('${m.id}')"><i class="fa-solid fa-trash"></i> Supprimer</button>`;
-        }
+    // 4. Build Active Tab Content
+    let tabContentHtml = '';
+    const currentTab = state.adminTab || 'proposals_registrations';
 
-        adminMarketsHtml += `
-            <div class="user-row">
-                <div style="flex:1;"><span style="font-weight: 600">${esc(m.title)}</span> ${statusBadge}</div>
-                <div>${btns}</div>
+    if (currentTab === 'proposals_registrations') {
+        tabContentHtml = `
+            <div class="admin-card" style="background: rgba(59, 130, 246, 0.1); border-color: #3b82f6; margin-bottom:1.5rem;">
+                <h2 class="admin-header" style="color: #3b82f6;"><i class="fa-solid fa-lightbulb"></i> Propositions de paris</h2>
+                ${pendingProps.length === 0 ? '<p>Aucune proposition en attente.</p>' : `<div class="users-list">${pendingProposalsHtml}</div>`}
+            </div>
+            
+            <div class="admin-card" style="background: rgba(255, 152, 0, 0.1); border-color: #ff9800; margin-bottom:1.5rem;">
+                <h2 class="admin-header" style="color: #ff9800;"><i class="fa-solid fa-user-clock"></i> Inscriptions en attente</h2>
+                ${pendingUsers === '' ? '<p>Aucune inscription en attente.</p>' : `<div class="users-list">${pendingUsers}</div>`}
+            </div>
+
+            ${ncReqs.length > 0 ? `
+            <div class="admin-card" style="background:rgba(168,85,247,0.08); border-color:#a855f7;">
+                <h2 class="admin-header" style="color:#a855f7;"><i class="fa-solid fa-pen"></i> Demandes de pseudonyme</h2>
+                <div class="users-list">${ncHtml}</div>
+            </div>` : ''}
+
+            ${prReqs.length > 0 ? `
+            <div class="admin-card" style="background:rgba(239,68,68,0.08); border-color:#ef4444;">
+                <h2 class="admin-header" style="color:#ef4444;"><i class="fa-solid fa-key"></i> Réinitialisations de mot de passe</h2>
+                <div class="users-list">${prHtml}</div>
+            </div>` : ''}
+        `;
+    } else if (currentTab === 'active_markets') {
+        tabContentHtml = `
+            <div class="admin-card">
+                <h2 class="admin-header"><i class="fa-solid fa-chart-pie"></i> Marchés Actifs</h2>
+                <button class="btn-primary" style="margin-bottom:1rem" onclick="app.adminCreateMarket()">+ Créer un Marché Officiel</button>
+                <div class="users-list">${adminMarketsHtml}</div>
             </div>
         `;
-    });
-
-    let pendingProposalsHtml = '';
-    const pendingProps = state.data.proposals.filter(p => p.status === 'pending');
-    pendingProps.forEach(p => {
-        pendingProposalsHtml += `
-            <div class="user-row" style="border-color: #3b82f6; flex-direction:column; align-items:stretch; gap: 0.5rem;">
-                <div>
-                    <span style="font-weight: 600">${esc(p.title)}</span> <span style="font-size:0.8rem; color:var(--text-secondary)">- par ${esc(p.authorName)}</span>
+    } else if (currentTab === 'members_points') {
+        tabContentHtml = `
+            <div class="admin-card">
+                <h2 class="admin-header"><i class="fa-solid fa-users"></i> Membres Actifs &amp; Points</h2>
+                <div class="admin-toolbar" style="display:flex; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; background:var(--bg-secondary); padding:1rem; border-radius:var(--radius-md); border:1px solid var(--border-color);">
+                    <div style="flex:1; min-width:200px;">
+                        <input type="text" id="adminSearchInput" placeholder="Rechercher un membre (pseudo, buque, noms)..." value="${state.adminSearch || ''}" oninput="app.handleAdminSearch()" style="width:100%; padding:0.5rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-primary);">
+                    </div>
+                    <div>
+                        <select id="adminSortSelect" onchange="app.handleAdminSort()" style="padding:0.5rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-primary);">
+                            <option value="role" ${state.adminSortBy==='role'?'selected':''}>Trier par : Rôle (Admins d'abord)</option>
+                            <option value="name" ${state.adminSortBy==='name'?'selected':''}>Trier par : Pseudo (A-Z)</option>
+                            <option value="points" ${state.adminSortBy==='points'?'selected':''}>Trier par : Points (Décroissant)</option>
+                            <option value="date" ${state.adminSortBy==='date'?'selected':''}>Trier par : Inscription (Plus récent)</option>
+                        </select>
+                    </div>
                 </div>
-                <div style="font-size: 0.85rem;">Choix: ${esc(p.choices.join(', '))}</div>
-                <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:0.5rem;">
-                    <button class="btn-outline" onclick="app.rejectProposal('${p.id}')">Rejeter</button>
-                    <button class="btn-primary" onclick="app.approveProposal('${p.id}')">Approuver & Créer Marché</button>
-                </div>
+                <div class="users-list">${activeUsers === '' ? '<p>Aucun utilisateur trouvé.</p>' : activeUsers}</div>
             </div>
         `;
-    });
+    } else if (currentTab === 'logs') {
+        tabContentHtml = `
+            ${state.currentUser.id === 'admin' || state.currentUser.superAdmin ? `
+            <div class="admin-card" style="background:rgba(239,68,68,0.07); border-color:#ef4444; margin-bottom:1.5rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h2 class="admin-header" style="color:#ef4444; margin:0;"><i class="fa-solid fa-receipt"></i> Journal des crédits admin</h2>
+                    <button class="btn-outline" style="border-color:#ef4444; color:#ef4444" onclick="app.viewGrantsLog()"><i class="fa-solid fa-eye"></i> Voir le journal</button>
+                </div>
+            </div>` : ''}
+
+            <div class="admin-card" style="background:rgba(6,182,212,0.06); border-color:#06b6d4; margin-bottom:1.5rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+                    <h2 class="admin-header" style="color:#06b6d4; margin:0;"><i class="fa-solid fa-scroll"></i> Journal d'activité global</h2>
+                    <button class="btn-outline" style="border-color:#06b6d4; color:#06b6d4;" onclick="app.loadActivityLog()">
+                        <i class="fa-solid fa-arrows-rotate"></i> Actualiser
+                    </button>
+                </div>
+                <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;
+                            background:var(--bg-secondary); padding:0.75rem;
+                            border-radius:var(--radius-md); border:1px solid var(--border-color);">
+                    <select id="activityTypeFilter" onchange="app.handleActivityFilterChange()"
+                            style="padding:0.4rem; border-radius:var(--radius-sm); border:1px solid var(--border-color);
+                                   background:var(--bg-card); color:var(--text-primary); font-size:0.85rem;">
+                        <option value="all">Tous types</option>
+                        <option value="bet">Mises uniquement</option>
+                        <option value="cashout">Reventes uniquement</option>
+                        <option value="grant">Crédits admin uniquement</option>
+                        <option value="admin_action">Actions admin uniquement</option>
+                    </select>
+                    <select id="activityMarketFilter" onchange="app.handleActivityFilterChange()"
+                            style="padding:0.4rem; border-radius:var(--radius-sm); border:1px solid var(--border-color);
+                                   background:var(--bg-card); color:var(--text-primary); font-size:0.85rem; max-width:220px;">
+                        <option value="all">Tous les marchés</option>
+                        ${state.data.markets.map(m => `<option value="${m.id}">${esc(m.title)}</option>`).join('')}
+                    </select>
+                    <input type="text" id="activityUserFilter" placeholder="Filtrer par utilisateur..."
+                           oninput="app.handleActivityFilterChange()"
+                           style="padding:0.4rem 0.75rem; border-radius:var(--radius-sm);
+                                  border:1px solid var(--border-color); background:var(--bg-card);
+                                  color:var(--text-primary); font-size:0.85rem; flex:1; min-width:150px;">
+                </div>
+                <div id="activityLogContainer">
+                    <p style="color:var(--text-secondary); text-align:center; padding:1rem;">
+                        <i class="fa-solid fa-spinner fa-spin"></i> Chargement des logs en cours...
+                    </p>
+                </div>
+            </div>
+
+            ${state.currentUser.superAdmin ? `
+            <div class="admin-card" style="background:rgba(6,182,212,0.06); border-color:#06b6d4;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+                    <h2 class="admin-header" style="color:#06b6d4; margin:0;"><i class="fa-solid fa-shield-halved" style="color:var(--accent-color);margin-right:0.5rem;"></i>Connexions du compte admin</h2>
+                    <button class="btn-outline" onclick="app.loadLoginLog()" style="font-size:0.85rem; padding:0.4rem 0.9rem;">
+                        <i class="fa-solid fa-arrows-rotate"></i> Actualiser
+                    </button>
+                </div>
+                <div id="loginLogContainer">
+                    <p style="color:var(--text-secondary); text-align:center; padding:1rem;">
+                        <i class="fa-solid fa-hand-pointer"></i> Cliquez sur "Actualiser" pour charger les connexions.
+                    </p>
+                </div>
+            </div>` : ''}
+        `;
+    }
 
     return `
         <div style="margin-bottom: 2rem"><button class="btn-outline" onclick="app.navigate('dashboard')"><i class="fa-solid fa-arrow-left"></i> Retour</button></div>
         <h1 class="page-title"><i class="fa-solid fa-shield-halved"></i> Panel d'Administration</h1>
-        
-        <div class="admin-card" style="background: rgba(59, 130, 246, 0.1); border-color: #3b82f6;">
-            <h2 class="admin-header" style="color: #3b82f6;"><i class="fa-solid fa-lightbulb"></i> Propositions de paris</h2>
-            ${pendingProps.length === 0 ? '<p>Aucune proposition en attente.</p>' : `<div class="users-list">${pendingProposalsHtml}</div>`}
+
+        <!-- Tab selection -->
+        <div class="admin-tabs" style="display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; flex-wrap: wrap;">
+            <button class="tab-btn ${currentTab === 'proposals_registrations' ? 'active' : ''}" 
+                    style="padding: 0.75rem 1.25rem; border-radius: var(--radius-md); border: none; background: ${currentTab === 'proposals_registrations' ? 'var(--accent-color)' : 'transparent'}; color: ${currentTab === 'proposals_registrations' ? 'white' : 'var(--text-secondary)'}; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; transition: all 0.2s;"
+                    onclick="app.setAdminTab('proposals_registrations')">
+                <i class="fa-solid fa-lightbulb"></i> Propositions & Inscriptions
+            </button>
+            <button class="tab-btn ${currentTab === 'active_markets' ? 'active' : ''}" 
+                    style="padding: 0.75rem 1.25rem; border-radius: var(--radius-md); border: none; background: ${currentTab === 'active_markets' ? 'var(--accent-color)' : 'transparent'}; color: ${currentTab === 'active_markets' ? 'white' : 'var(--text-secondary)'}; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; transition: all 0.2s;"
+                    onclick="app.setAdminTab('active_markets')">
+                <i class="fa-solid fa-chart-pie"></i> Marchés actifs
+            </button>
+            <button class="tab-btn ${currentTab === 'members_points' ? 'active' : ''}" 
+                    style="padding: 0.75rem 1.25rem; border-radius: var(--radius-md); border: none; background: ${currentTab === 'members_points' ? 'var(--accent-color)' : 'transparent'}; color: ${currentTab === 'members_points' ? 'white' : 'var(--text-secondary)'}; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; transition: all 0.2s;"
+                    onclick="app.setAdminTab('members_points')">
+                <i class="fa-solid fa-users"></i> Membres & Points
+            </button>
+            <button class="tab-btn ${currentTab === 'logs' ? 'active' : ''}" 
+                    style="padding: 0.75rem 1.25rem; border-radius: var(--radius-md); border: none; background: ${currentTab === 'logs' ? 'var(--accent-color)' : 'transparent'}; color: ${currentTab === 'logs' ? 'white' : 'var(--text-secondary)'}; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; transition: all 0.2s;"
+                    onclick="app.setAdminTab('logs')">
+                <i class="fa-solid fa-scroll"></i> Logs
+            </button>
         </div>
 
-        <div class="admin-card" style="background: rgba(255, 152, 0, 0.1); border-color: #ff9800;">
-            <h2 class="admin-header" style="color: #ff9800;"><i class="fa-solid fa-user-clock"></i> Inscriptions en attente</h2>
-            ${pendingUsers === '' ? '<p>Aucune inscription en attente.</p>' : `<div class="users-list">${pendingUsers}</div>`}
+        <div class="admin-tab-content">
+            ${tabContentHtml}
         </div>
-
-        ${(() => {
-            const ncReqs = state.data.nameChangeRequests || [];
-            if (ncReqs.length === 0) return '';
-            const ncHtml = ncReqs.map(r => `
-                <div class="user-row" style="border-color:#a855f7; flex-direction:column; align-items:stretch; gap:0.4rem;">
-                    <div><strong>${esc(r.oldName)}</strong> <i class="fa-solid fa-arrow-right" style="color:var(--text-secondary)"></i> <strong style="color:#a855f7">${esc(r.newName)}</strong></div>
-                    <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
-                        <button class="btn-outline" onclick="app.rejectNameChange('${r.id}')">Rejeter</button>
-                        <button class="btn-primary" style="background:#a855f7" onclick="app.approveNameChange('${r.id}')">Approuver</button>
-                    </div>
-                </div>`).join('');
-            return `<div class="admin-card" style="background:rgba(168,85,247,0.08); border-color:#a855f7;">
-                <h2 class="admin-header" style="color:#a855f7;"><i class="fa-solid fa-pen"></i> Demandes de pseudonyme</h2>
-                <div class="users-list">${ncHtml}</div>
-            </div>`;
-        })()}
-
-        <div class="admin-card">
-            <h2 class="admin-header"><i class="fa-solid fa-chart-pie"></i> Marchés Actifs</h2>
-            <button class="btn-primary" style="margin-bottom:1rem" onclick="app.createMarketDirect()">+ Créer un Marché Officiel</button>
-            <div class="users-list">${adminMarketsHtml}</div>
-        </div>
-
-        <div class="admin-card">
-            <h2 class="admin-header"><i class="fa-solid fa-users"></i> Membres Actifs &amp; Points</h2>
-            <div class="admin-toolbar" style="display:flex; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; background:var(--bg-secondary); padding:1rem; border-radius:var(--radius-md); border:1px solid var(--border-color);">
-                <div style="flex:1; min-width:200px;">
-                    <input type="text" id="adminSearchInput" placeholder="Rechercher un membre (pseudo, buque, noms)..." value="${state.adminSearch || ''}" oninput="app.handleAdminSearch()" style="width:100%; padding:0.5rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-primary);">
-                </div>
-                <div>
-                    <select id="adminSortSelect" onchange="app.handleAdminSort()" style="padding:0.5rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-primary);">
-                        <option value="role" ${state.adminSortBy==='role'?'selected':''}>Trier par : Rôle (Admins d'abord)</option>
-                        <option value="name" ${state.adminSortBy==='name'?'selected':''}>Trier par : Pseudo (A-Z)</option>
-                        <option value="points" ${state.adminSortBy==='points'?'selected':''}>Trier par : Points (Décroissant)</option>
-                        <option value="date" ${state.adminSortBy==='date'?'selected':''}>Trier par : Inscription (Plus récent)</option>
-                    </select>
-                </div>
-            </div>
-            <div class="users-list">${activeUsers === '' ? '<p>Aucun utilisateur trouvé.</p>' : activeUsers}</div>
-        </div>
-
-        ${state.currentUser.id === 'admin' ? `
-        <div class="admin-card" style="background:rgba(239,68,68,0.07); border-color:#ef4444;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h2 class="admin-header" style="color:#ef4444; margin:0;"><i class="fa-solid fa-receipt"></i> Journal des crédits admin</h2>
-                <button class="btn-outline" style="border-color:#ef4444; color:#ef4444" onclick="app.viewGrantsLog()"><i class="fa-solid fa-eye"></i> Voir le journal</button>
-            </div>
-        </div>` : ''}
-
-        <div class="admin-card" style="background:rgba(6,182,212,0.06); border-color:#06b6d4;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-                <h2 class="admin-header" style="color:#06b6d4; margin:0;"><i class="fa-solid fa-scroll"></i> Journal d'activité global</h2>
-                <button class="btn-outline" style="border-color:#06b6d4; color:#06b6d4;" onclick="app.loadActivityLog()">
-                    <i class="fa-solid fa-arrows-rotate"></i> Actualiser
-                </button>
-            </div>
-            <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;
-                        background:var(--bg-secondary); padding:0.75rem;
-                        border-radius:var(--radius-md); border:1px solid var(--border-color);">
-                <select id="activityTypeFilter" onchange="app.filterActivityLog()"
-                        style="padding:0.4rem; border-radius:var(--radius-sm); border:1px solid var(--border-color);
-                               background:var(--bg-card); color:var(--text-primary); font-size:0.85rem;">
-                    <option value="all">Tous types</option>
-                    <option value="bet">Mises uniquement</option>
-                    <option value="cashout">Reventes uniquement</option>
-                    <option value="grant">Crédits admin uniquement</option>
-                </select>
-                <select id="activityMarketFilter" onchange="app.filterActivityLog()"
-                        style="padding:0.4rem; border-radius:var(--radius-sm); border:1px solid var(--border-color);
-                               background:var(--bg-card); color:var(--text-primary); font-size:0.85rem; max-width:220px;">
-                    <option value="all">Tous les marchés</option>
-                    ${state.data.markets.map(m => `<option value="${m.id}">${esc(m.title)}</option>`).join('')}
-                </select>
-                <input type="text" id="activityUserFilter" placeholder="Filtrer par utilisateur..."
-                       oninput="app.filterActivityLog()"
-                       style="padding:0.4rem 0.75rem; border-radius:var(--radius-sm);
-                              border:1px solid var(--border-color); background:var(--bg-card);
-                              color:var(--text-primary); font-size:0.85rem; flex:1; min-width:150px;">
-            </div>
-            <div id="activityLogContainer">
-                <p style="color:var(--text-secondary); text-align:center; padding:1rem;">
-                    <i class="fa-solid fa-hand-pointer"></i> Cliquez sur "Actualiser" pour charger les logs.
-                </p>
-            </div>
-        </div>
-
-        ${state.currentUser.superAdmin ? `
-        <div class="admin-section">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-                <h2 style="margin:0;"><i class="fa-solid fa-shield-halved" style="color:var(--accent-color);margin-right:0.5rem;"></i>Connexions du compte admin</h2>
-                <button class="btn-outline" onclick="app.loadLoginLog()" style="font-size:0.85rem; padding:0.4rem 0.9rem;">
-                    <i class="fa-solid fa-arrows-rotate"></i> Actualiser
-                </button>
-            </div>
-            <div id="loginLogContainer">
-                <p style="color:var(--text-secondary); text-align:center; padding:1rem;">
-                    <i class="fa-solid fa-hand-pointer"></i> Cliquez sur "Actualiser" pour charger les connexions.
-                </p>
-            </div>
-        </div>` : ''}
     `;
 }
 
@@ -2594,6 +2791,7 @@ function renderProfile() {
             <div class="user-row" style="flex-direction:column; align-items:flex-start; gap:0.4rem;">
                 <div><strong>Nom :</strong> ${esc(u.name)}</div>
                 <div><strong>Identifiant :</strong> ${esc(u.username)}</div>
+                <div><strong>E-mail :</strong> ${esc(u.email || 'Non renseigné')}</div>
                 <div><strong>Bu\u00e8que :</strong> ${esc(u.buque) || '—'}</div>
                 <div><strong>Promotion :</strong> ${esc(u.proms) || '—'}</div>
                 <div><strong>Num\u00e9ro :</strong> ${esc(u.nums) || '—'}</div>
@@ -2624,6 +2822,19 @@ function renderProfile() {
                 <input id="newPass2" type="password" placeholder="Confirmer le nouveau mot de passe"
                     style="padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
                 <button class="btn-primary" onclick="app.changePassword()">
+                    <i class="fa-solid fa-floppy-disk"></i> Enregistrer
+                </button>
+            </div>
+        </div>
+
+        <div class="admin-card">
+            <h2 class="admin-header"><i class="fa-solid fa-envelope"></i> Changer mon e-mail</h2>
+            <div style="display:flex; flex-direction:column; gap:0.75rem; max-width:420px;">
+                <input id="newEmail" type="email" placeholder="Nouvelle adresse e-mail"
+                    style="padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
+                <input id="emailPass" type="password" placeholder="Mot de passe actuel"
+                    style="padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);">
+                <button class="btn-primary" onclick="app.changeEmail()">
                     <i class="fa-solid fa-floppy-disk"></i> Enregistrer
                 </button>
             </div>
