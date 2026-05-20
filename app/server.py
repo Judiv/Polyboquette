@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, request, jsonify, session, send_from_directory, abort
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 try:
     import psycopg2
@@ -39,6 +40,7 @@ DB_PATH    = os.path.join(DATA_DIR, "db.json")
 STATIC_DIR = BASE_DIR          # index.html est à la racine de PolyBoquette/
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Clé secrète – remplace par une vraie valeur en prod (variable d'env)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
@@ -61,7 +63,9 @@ DEFAULT_DB = {
     "proposals": [],
     "admin_grants_log": [],
     "admin_login_log": [],
-    "name_change_requests": []
+    "name_change_requests": [],
+    "admin_audit_log": [],
+    "password_reset_requests": []
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -81,6 +85,17 @@ def _check_rate_limit(ip: str) -> bool:
         return True
     _login_attempts[ip].append(now)
     return False
+
+
+def _get_client_ip():
+    """Récupère l'adresse IP réelle du client, en prenant en compte les proxys."""
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    if x_forwarded_for:
+        return x_forwarded_for.split(",")[0].strip()
+    x_real_ip = request.headers.get("X-Real-IP")
+    if x_real_ip:
+        return x_real_ip.strip()
+    return request.remote_addr or "127.0.0.1"
 
 
 
@@ -113,6 +128,10 @@ def _migrate(db):
         db["name_change_requests"] = []
     if "admin_login_log" not in db:
         db["admin_login_log"] = []
+    if "admin_audit_log" not in db:
+        db["admin_audit_log"] = []
+    if "password_reset_requests" not in db:
+        db["password_reset_requests"] = []
     # Migration : supprimer le compte admin hardcodé avec password en clair
     admin_hardcoded = db["users"].get("admin")
     if admin_hardcoded and admin_hardcoded.get("password") == "admin123":
@@ -130,6 +149,9 @@ def _migrate(db):
         # Champ session_token pour la révocation
         if "session_token" not in u:
             u["session_token"] = None
+        # Champ email
+        if "email" not in u:
+            u["email"] = ""
         # Initialiser superAdmin à False pour tous les non-admins
         if u.get("role") != "admin" and "superAdmin" not in u:
             u["superAdmin"] = False
@@ -250,6 +272,29 @@ def save_db(db):
         os.makedirs(DATA_DIR, exist_ok=True)
         with open(DB_PATH, "w", encoding="utf-8") as f:
             json.dump(db, f, ensure_ascii=False, indent=2)
+
+
+def _log_admin_action(db, action_type, details, market_id=None, market_title=None):
+    """Journalise une action administrative dans la DB."""
+    admin_id = session.get("user_id", "system")
+    admin_name = "Système"
+    if admin_id in db.get("users", {}):
+        admin_name = db["users"][admin_id]["name"]
+    
+    entry = {
+        "time": datetime.now(timezone.utc).isoformat(),
+        "adminId": admin_id,
+        "adminName": admin_name,
+        "type": action_type,
+        "details": details,
+        "marketId": market_id,
+        "marketTitle": market_title
+    }
+    
+    if "admin_audit_log" not in db:
+        db["admin_audit_log"] = []
+    db["admin_audit_log"].insert(0, entry)
+    db["admin_audit_log"] = db["admin_audit_log"][:2000]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -387,7 +432,7 @@ def auth_me():
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
     # Rate limiting anti brute-force
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
+    ip = _get_client_ip()
     if _check_rate_limit(ip):
         return jsonify({"error": "Trop de tentatives. Réessayez dans une minute."}), 429
 
@@ -409,7 +454,7 @@ def auth_login():
     user["session_token"] = token
     # Journaliser les connexions du super-admin
     if user.get("superAdmin"):
-        ip      = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
+        ip      = _get_client_ip()
         ua      = request.headers.get("User-Agent", "inconnu")[:200]
         db["admin_login_log"].insert(0, {
             "time":      datetime.now(timezone.utc).isoformat(),
@@ -437,6 +482,7 @@ def auth_register():
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
     name     = data.get("name", "").strip()
+    email    = data.get("email", "").strip()
     if not username or not password or not name:
         return jsonify({"error": "Nom, identifiant et mot de passe requis"}), 400
     if len(password) < 6:
@@ -444,11 +490,15 @@ def auth_register():
     db = load_db()
     if any(u["username"] == username for u in db["users"].values()):
         return jsonify({"error": "Cet identifiant est déjà pris"}), 409
+    
+    if email and any(u.get("email") == email for u in db["users"].values()):
+        return jsonify({"error": "Cette adresse e-mail est déjà utilisée"}), 409
+
     new_id = "u" + secrets.token_hex(6)
     db["users"][new_id] = {
         "id": new_id, "username": username,
         "password": generate_password_hash(password),
-        "name": name, "role": "user", "status": "pending", "points": 100,
+        "name": name, "email": email, "role": "user", "status": "pending", "points": 100,
         "buque": data.get("buque", ""),
         "nums":  data.get("nums",  ""),
         "proms": data.get("proms", ""),
@@ -479,6 +529,86 @@ def auth_change_password():
     user["session_token"] = new_token
     session["token"] = new_token
     save_db(db)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/change-email", methods=["POST"])
+@login_required
+def auth_change_email():
+    data = request.get_json()
+    password = data.get("password", "").strip()
+    new_email = data.get("newEmail", "").strip()
+    db = load_db()
+    user = db["users"].get(session["user_id"])
+    if not user:
+        return jsonify({"error": "Utilisateur introuvable"}), 404
+    if not check_password_hash(user["password"], password):
+        return jsonify({"error": "Mot de passe incorrect"}), 400
+    if new_email and any(u.get("email") == new_email and u["id"] != user["id"] for u in db["users"].values()):
+        return jsonify({"error": "Cette adresse e-mail est déjà utilisée par un autre compte"}), 409
+    
+    user["email"] = new_email
+    save_db(db)
+    return jsonify({"ok": True, "user": safe_user(user)})
+
+
+@app.route("/api/auth/forgot-password", methods=["POST"])
+def auth_forgot_password():
+    data = request.get_json()
+    username = data.get("username", "").strip()
+    if not username:
+        return jsonify({"error": "Nom d'utilisateur requis"}), 400
+    
+    db = load_db()
+    user = next((u for u in db["users"].values() if u["username"] == username), None)
+    if user:
+        req_id = "pr" + secrets.token_hex(6)
+        if "password_reset_requests" not in db:
+            db["password_reset_requests"] = []
+        
+        existing = next((r for r in db["password_reset_requests"] if r["userId"] == user["id"]), None)
+        if not existing:
+            db["password_reset_requests"].append({
+                "id": req_id,
+                "userId": user["id"],
+                "userName": user["name"],
+                "username": user["username"],
+                "time": datetime.now(timezone.utc).isoformat()
+            })
+            save_db(db)
+            
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/password-resets", methods=["GET"])
+@admin_required
+def get_password_resets():
+    db = load_db()
+    return jsonify(db.get("password_reset_requests", []))
+
+
+@app.route("/api/admin/password-resets/<req_id>/approve", methods=["POST"])
+@admin_required
+def approve_password_reset(req_id):
+    data = request.get_json()
+    new_password = data.get("newPassword", "").strip()
+    if len(new_password) < 6:
+        return jsonify({"error": "Le mot de passe doit faire au moins 6 caractères"}), 400
+        
+    db = load_db()
+    reqs = db.get("password_reset_requests", [])
+    req = next((r for r in reqs if r["id"] == req_id), None)
+    if not req:
+        return jsonify({"error": "Requête introuvable"}), 404
+        
+    user = db["users"].get(req["userId"])
+    if user:
+        user["password"] = generate_password_hash(new_password)
+        user["session_token"] = secrets.token_hex(32)
+        
+    db["password_reset_requests"] = [r for r in reqs if r["id"] != req_id]
+    save_db(db)
+    
     return jsonify({"ok": True})
 
 
@@ -775,6 +905,7 @@ def approve_proposal(proposal_id):
     }
     db["markets"].append(new_market)
     p["status"] = "approved"
+    _log_admin_action(db, "approve_proposal", f"Approbation de la proposition '{p['title']}'", market_id=new_market["id"], market_title=p["title"])
     save_db(db)
     return jsonify({"ok": True, "market": new_market})
 
@@ -789,6 +920,8 @@ def reject_proposal(proposal_id):
         return jsonify({"error": "Proposition introuvable"}), 404
     p["status"] = "rejected"
     p["adminNote"] = data.get("note", "").strip()
+    note_suffix = f" (motif : {p['adminNote']})" if p["adminNote"] else ""
+    _log_admin_action(db, "reject_proposal", f"Rejet de la proposition '{p['title']}'{note_suffix}")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -810,6 +943,7 @@ def admin_approve_user(user_id):
     if user_id not in db["users"]:
         return jsonify({"error": "Introuvable"}), 404
     db["users"][user_id]["status"] = "active"
+    _log_admin_action(db, "approve_user", f"Approbation de l'inscription de {db['users'][user_id]['name']} (@{db['users'][user_id]['username']})")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -821,6 +955,7 @@ def admin_reject_user(user_id):
     if user_id not in db["users"]:
         return jsonify({"error": "Introuvable"}), 404
     db["users"][user_id]["status"] = "rejected"
+    _log_admin_action(db, "reject_user", f"Rejet de l'inscription de {db['users'][user_id]['name']} (@{db['users'][user_id]['username']})")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -844,6 +979,8 @@ def admin_toggle_role(user_id):
     if target.get("role") == "admin" and nb_admins <= 1:
         return jsonify({"error": "Impossible de rétrograder le seul administrateur restant"}), 400
     target["role"] = "admin" if target.get("role") != "admin" else "user"
+    role_str = "ADMIN" if target["role"] == "admin" else "UTILISATEUR"
+    _log_admin_action(db, "toggle_role", f"Changement du rôle de {target['name']} (@{target['username']}) en {role_str}")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -873,6 +1010,8 @@ def admin_grant_points(user_id):
         "amount": amount
     })
     db["admin_grants_log"] = db["admin_grants_log"][:200]
+    action_desc = f"Attribution de {amount} pts à {user['name']} (@{user['username']})"
+    _log_admin_action(db, "grant", action_desc)
     save_db(db)
     return jsonify({"ok": True, "points": user["points"]})
 
@@ -886,6 +1025,7 @@ def admin_delete_user(user_id):
         return jsonify({"error": "Introuvable"}), 404
     if target.get("role") == "admin":
         return jsonify({"error": "Impossible de supprimer un compte administrateur"}), 400
+    _log_admin_action(db, "delete_user", f"Suppression définitive du compte de {target['name']} (@{target['username']})")
     del db["users"][user_id]
     save_db(db)
     return jsonify({"ok": True})
@@ -906,6 +1046,7 @@ def admin_kick_user(user_id):
     # ont l'ancien token → elles seront immédiatement rejetées.
     # (mettre None ne fonctionne pas car 'if stored_token' serait False)
     target["session_token"] = secrets.token_hex(32)
+    _log_admin_action(db, "kick_user", f"Déconnexion forcée de {target['name']} (@{target['username']})")
     save_db(db)
     return jsonify({"ok": True, "message": f"'{target['name']}' déconnecté(e) de tous les appareils."})
 
@@ -924,7 +1065,9 @@ def admin_rename_market(market_id):
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
     if not m:
         return jsonify({"error": "Introuvable"}), 404
+    old_title = m["title"]
     m["title"] = new_title
+    _log_admin_action(db, "rename_market", f"Renommé le marché '{old_title}' en '{new_title}'", market_id=market_id, market_title=new_title)
     save_db(db)
     return jsonify({"ok": True, "title": new_title})
 
@@ -960,6 +1103,7 @@ def admin_create_market():
         "history": [{"time": "Début", **init_probs}]
     }
     db["markets"].append(new_market)
+    _log_admin_action(db, "create_market", f"Création du marché '{title}'", market_id=new_market["id"], market_title=title)
     save_db(db)
     return jsonify(new_market), 201
 
@@ -984,6 +1128,8 @@ def admin_toggle_pause(market_id):
         m["status"] = "open"
         m["pauseAt"] = None
         
+    action_str = "Mise en pause" if m["status"] == "paused" else ("Planification d'une pause" if m["pauseAt"] else "Réactivation")
+    _log_admin_action(db, "toggle_pause", f"{action_str} du marché '{m['title']}'", market_id=market_id, market_title=m["title"])
     save_db(db)
     return jsonify({"status": m["status"], "pauseAt": m.get("pauseAt")})
 
@@ -1005,6 +1151,7 @@ def admin_resolve_market(market_id):
     real_total_pool = sum(b["amount"] for b in m["bets"])
 
     if winner_id == "cancelled":
+        res_str = "annulé"
         for b in m["bets"]:
             if b["userId"] in db["users"]:
                 db["users"][b["userId"]]["points"] += b["amount"]
@@ -1012,6 +1159,7 @@ def admin_resolve_market(market_id):
     else:
         winning_opt = next((o for o in m["options"] if o["id"] == winner_id), None)
         if winning_opt:
+            res_str = f"résolu (option '{winning_opt['label']}')"
             real_winning_pool = sum(b["amount"] for b in m["bets"] if b["optId"] == winner_id)
 
             if real_winning_pool == 0:
@@ -1032,7 +1180,10 @@ def admin_resolve_market(market_id):
                             add_tx(db["users"][b["userId"]], f"Gain '{m['title']}'", payout)
                         else:
                             add_tx(db["users"][b["userId"]], f"Pari perdu '{m['title']}'", 0)
+        else:
+            res_str = f"résolu (option {winner_id})"
 
+    _log_admin_action(db, "resolve_market", f"Clôture du marché : {res_str}", market_id=market_id, market_title=m["title"])
     save_db(db)
     return jsonify({"ok": True})
 
@@ -1046,6 +1197,8 @@ def admin_delete_market(market_id):
         return jsonify({"error": "Introuvable"}), 404
     if db["markets"][idx]["status"] not in ["resolved", "cancelled"]:
         return jsonify({"error": "Seuls les marchés clôturés peuvent être supprimés"}), 400
+    m = db["markets"][idx]
+    _log_admin_action(db, "delete_market", f"Suppression définitive du marché '{m['title']}'", market_id=market_id, market_title=m["title"])
     db["markets"].pop(idx)
     save_db(db)
     return jsonify({"ok": True})
@@ -1090,15 +1243,21 @@ def admin_categories():
         if "categories" not in db:
             db["categories"] = []
         db["categories"].append(new_cat)
+        _log_admin_action(db, "create_category", f"Création de la catégorie '{name}'")
         save_db(db)
         return jsonify({"ok": True, "category": new_cat})
     elif action == "delete":
         cat_id = data.get("id")
+        cat_name = "Inconnue"
+        cat_obj = next((c for c in db.get("categories", []) if c["id"] == cat_id), None)
+        if cat_obj:
+            cat_name = cat_obj["name"]
         db["categories"] = [c for c in db.get("categories", []) if c["id"] != cat_id]
         # Reset market categories that were in this category
         for m in db["markets"]:
             if m.get("categoryId") == cat_id:
                 m["categoryId"] = None
+        _log_admin_action(db, "delete_category", f"Suppression de la catégorie '{cat_name}'")
         save_db(db)
         return jsonify({"ok": True})
     return jsonify({"error": "Action inconnue"}), 400
@@ -1128,6 +1287,7 @@ def admin_reorder_markets():
             m["categoryId"] = m_data.get("categoryId")
             m["order"] = m_data.get("order", 0)
             
+    _log_admin_action(db, "reorder", "Réorganisation des catégories et des marchés")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -1161,8 +1321,7 @@ def admin_login_log():
 @admin_required
 def admin_activity_log():
     """
-    Agrège tous les actionLog des marchés + admin_grants_log.
-    Retourne jusqu'à 500 entrées triées du plus récent au plus ancien.
+    Agrège tous les actionLog des marchés, admin_grants_log et admin_audit_log.
     """
     db = load_db()
     logs = []
@@ -1197,10 +1356,25 @@ def admin_activity_log():
             "amount":      g.get("amount", 0),
         })
 
+    # Collecte des actions d'administration globales
+    for a in db.get("admin_audit_log", []):
+        logs.append({
+            "marketId":    a.get("marketId"),
+            "marketTitle": a.get("marketTitle"),
+            "type":        a.get("type", "admin_action"),
+            "time":        a.get("time", ""),
+            "userId":      None,
+            "userName":    None,
+            "adminId":     a.get("adminId", ""),
+            "adminName":   a.get("adminName", ""),
+            "details":     a.get("details", ""),
+            "amount":      None,
+        })
+
     # Tri décroissant par timestamp (ISO string → tri lexicographique correct)
     logs.sort(key=lambda x: x.get("time", ""), reverse=True)
 
-    return jsonify(logs[:500])
+    return jsonify(logs)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1252,6 +1426,7 @@ def admin_approve_name_change(req_id):
         user["name"] = req["newName"]
         add_tx(user, f"Pseudonyme changé en '{req['newName']}'", 0)
     req["status"] = "approved"
+    _log_admin_action(db, "approve_name", f"Approbation du changement de pseudo de {req['oldName']} en '{req['newName']}'")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -1264,6 +1439,7 @@ def admin_reject_name_change(req_id):
     if not req:
         return jsonify({"error": "Demande introuvable"}), 404
     req["status"] = "rejected"
+    _log_admin_action(db, "reject_name", f"Rejet du changement de pseudo de {req['oldName']} en '{req['newName']}'")
     save_db(db)
     return jsonify({"ok": True})
 
