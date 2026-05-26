@@ -46,6 +46,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SECURE"] = True
 
 PALETTE = ['#22c55e', '#ef4444', '#3b82f6', '#d946ef', '#f97316', '#eab308', '#06b6d4']
 
@@ -88,13 +89,7 @@ def _check_rate_limit(ip: str) -> bool:
 
 
 def _get_client_ip():
-    """Récupère l'adresse IP réelle du client, en prenant en compte les proxys."""
-    x_forwarded_for = request.headers.get("X-Forwarded-For")
-    if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip()
-    x_real_ip = request.headers.get("X-Real-IP")
-    if x_real_ip:
-        return x_real_ip.strip()
+    """Récupère l'adresse IP réelle du client."""
     return request.remote_addr or "127.0.0.1"
 
 
@@ -436,14 +431,14 @@ def auth_login():
     if _check_rate_limit(ip):
         return jsonify({"error": "Trop de tentatives. Réessayez dans une minute."}), 429
 
-    data = request.get_json()
+    data = request.get_json() or {}
     db = load_db()
     user = next(
         (u for u in db["users"].values() if u["username"] == data.get("username")),
         None
     )
     # check_password_hash est résistant aux timing attacks
-    if not user or not check_password_hash(user.get("password", ""), data.get("password", "")):
+    if not user or not check_password_hash(user.get("password", ""), data.get("password") or ""):
         return jsonify({"error": "Identifiants incorrects"}), 401
     if user["status"] == "pending":
         return jsonify({"error": "Compte en attente de validation admin"}), 403
@@ -478,11 +473,11 @@ def auth_logout():
 
 @app.route("/api/auth/register", methods=["POST"])
 def auth_register():
-    data = request.get_json()
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    name     = data.get("name", "").strip()
-    email    = data.get("email", "").strip()
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = (data.get("password") or "").strip()
+    name     = (data.get("name") or "").strip()
+    email    = (data.get("email") or "").strip()
     if not username or not password or not name:
         return jsonify({"error": "Nom, identifiant et mot de passe requis"}), 400
     if len(password) < 6:
@@ -512,9 +507,9 @@ def auth_register():
 @app.route("/api/auth/change-password", methods=["POST"])
 @login_required
 def auth_change_password():
-    data = request.get_json()
-    old_pass = data.get("oldPassword", "").strip()
-    new_pass = data.get("newPassword", "").strip()
+    data = request.get_json() or {}
+    old_pass = (data.get("oldPassword") or "").strip()
+    new_pass = (data.get("newPassword") or "").strip()
     db = load_db()
     user = db["users"].get(session["user_id"])
     if not user:
@@ -535,9 +530,9 @@ def auth_change_password():
 @app.route("/api/auth/change-email", methods=["POST"])
 @login_required
 def auth_change_email():
-    data = request.get_json()
-    password = data.get("password", "").strip()
-    new_email = data.get("newEmail", "").strip()
+    data = request.get_json() or {}
+    password = (data.get("password") or "").strip()
+    new_email = (data.get("newEmail") or "").strip()
     db = load_db()
     user = db["users"].get(session["user_id"])
     if not user:
@@ -554,8 +549,8 @@ def auth_change_email():
 
 @app.route("/api/auth/forgot-password", methods=["POST"])
 def auth_forgot_password():
-    data = request.get_json()
-    username = data.get("username", "").strip()
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
     if not username:
         return jsonify({"error": "Nom d'utilisateur requis"}), 400
     
@@ -590,8 +585,8 @@ def get_password_resets():
 @app.route("/api/admin/password-resets/<req_id>/approve", methods=["POST"])
 @admin_required
 def approve_password_reset(req_id):
-    data = request.get_json()
-    new_password = data.get("newPassword", "").strip()
+    data = request.get_json() or {}
+    new_password = (data.get("newPassword") or "").strip()
     if len(new_password) < 6:
         return jsonify({"error": "Le mot de passe doit faire au moins 6 caractères"}), 400
         
@@ -673,7 +668,7 @@ def get_market(market_id):
 @app.route("/api/markets/<market_id>/bet", methods=["POST"])
 @login_required
 def place_bet(market_id):
-    data = request.get_json()
+    data = request.get_json() or {}
     opt_id = data.get("optId")
     amount = data.get("amount", 0)
     db = load_db()
@@ -802,8 +797,8 @@ def cashout_bet(market_id, bet_id):
 @app.route("/api/markets/<market_id>/comments", methods=["POST"])
 @login_required
 def post_comment(market_id):
-    data = request.get_json()
-    text = data.get("text", "").strip()
+    data = request.get_json() or {}
+    text = (data.get("text") or "").strip()
     if not text:
         return jsonify({"error": "Commentaire vide"}), 400
         
@@ -848,7 +843,7 @@ def get_proposals():
 @app.route("/api/proposals", methods=["POST"])
 @login_required
 def submit_proposal():
-    data = request.get_json()
+    data = request.get_json() or {}
     title   = (data.get("title") or "").strip()
     choices = data.get("choices", [])
     image   = (data.get("image") or "").strip()
@@ -988,7 +983,7 @@ def admin_toggle_role(user_id):
 @app.route("/api/admin/users/<user_id>/grant", methods=["POST"])
 @admin_required
 def admin_grant_points(user_id):
-    data = request.get_json()
+    data = request.get_json() or {}
     amount = data.get("amount", 0)
     db = load_db()
     if user_id not in db["users"]:
@@ -1057,7 +1052,7 @@ def admin_kick_user(user_id):
 @app.route("/api/admin/markets/<market_id>/rename", methods=["POST"])
 @admin_required
 def admin_rename_market(market_id):
-    data = request.get_json()
+    data = request.get_json() or {}
     new_title = (data.get("title") or "").strip()
     if not new_title:
         return jsonify({"error": "Le titre ne peut pas être vide"}), 400
@@ -1075,7 +1070,7 @@ def admin_rename_market(market_id):
 @app.route("/api/admin/markets", methods=["POST"])
 @admin_required
 def admin_create_market():
-    data = request.get_json()
+    data = request.get_json() or {}
     title   = (data.get("title") or "").strip()
     choices = data.get("choices", [])
     image   = (data.get("image") or "").strip()
@@ -1137,7 +1132,7 @@ def admin_toggle_pause(market_id):
 @app.route("/api/admin/markets/<market_id>/resolve", methods=["POST"])
 @admin_required
 def admin_resolve_market(market_id):
-    data = request.get_json()
+    data = request.get_json() or {}
     winner_id = data.get("winnerId")
     db = load_db()
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
@@ -1229,7 +1224,7 @@ def admin_categories():
         return jsonify(db.get("categories", []))
         
     # POST
-    data = request.get_json()
+    data = request.get_json() or {}
     action = data.get("action")
     if action == "create":
         name = data.get("name", "").strip()
@@ -1266,7 +1261,7 @@ def admin_categories():
 @app.route("/api/admin/markets/reorder", methods=["POST"])
 @admin_required
 def admin_reorder_markets():
-    data = request.get_json()
+    data = request.get_json() or {}
     categories = data.get("categories", []) # list of {id, order}
     markets = data.get("markets", []) # list of {id, categoryId, order}
     
@@ -1383,7 +1378,7 @@ def admin_activity_log():
 @app.route("/api/profile/request-name-change", methods=["POST"])
 @login_required
 def request_name_change():
-    data = request.get_json()
+    data = request.get_json() or {}
     new_name = (data.get("newName") or "").strip()
     if not new_name or len(new_name) < 2:
         return jsonify({"error": "Le pseudonyme doit faire au moins 2 caractères"}), 400
@@ -1476,7 +1471,6 @@ def toggle_pin_market():
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    debug = os.environ.get("FLASK_ENV") != "production"
     print(f"[OK] PolyBoquette demarre sur http://localhost:{port}")
     print(f"   DB : {DB_PATH}")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host="0.0.0.0", port=port, debug=False)

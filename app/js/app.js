@@ -1136,7 +1136,7 @@ const app = {
             });
             html += '</div>';
         }
-        ui.showModal(`Historique: ${m.title}`, html, () => ui.closeModal(true), "Fermer");
+        ui.showModal(`Historique: ${esc(m.title)}`, html, () => ui.closeModal(true), "Fermer");
     },
 
     changeEmail: async () => {
@@ -1256,7 +1256,7 @@ const app = {
         if (pending) return ui.showToast('Vous avez déjà une demande en attente.', 'error');
         ui.showModal(
             "<i class='fa-solid fa-pen'></i> Changer mon nom affiché",
-            `<p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:1rem;">Ce changement doit être validé par un admin. Votre nom actuel : <strong>${state.currentUser.name}</strong></p>
+            `<p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:1rem;">Ce changement doit être validé par un admin. Votre nom actuel : <strong>${esc(state.currentUser.name)}</strong></p>
             <label style="display:block; margin-bottom:0.5rem; font-weight:500;">Nouveau nom affiché :</label>
             <input type="text" id="modalNewName" style="width:100%; padding:0.75rem; border-radius:var(--radius-md); border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);" placeholder="Ex: Jean-Pierre">`,
             async () => {
@@ -2805,7 +2805,7 @@ function renderProfile() {
         <div class="admin-card" style="border-color:#a855f7; background:rgba(168,85,247,0.06);">
             <h2 class="admin-header" style="color:#a855f7;"><i class="fa-solid fa-pen"></i> Changer mon nom affich\u00e9</h2>
             <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:1rem;">
-                Nom actuel : <strong>${u.name}</strong>. La demande doit \u00eatre valid\u00e9e par un admin.
+                Nom actuel : <strong>${esc(u.name)}</strong>. La demande doit être validée par un admin.
             </p>
             <button class="btn-outline" style="border-color:#a855f7; color:#a855f7;" onclick="app.requestNameChange()">
                 <i class="fa-solid fa-pen-to-square"></i> Demander un changement de nom
