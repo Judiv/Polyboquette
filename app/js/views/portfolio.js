@@ -7,7 +7,9 @@ import { router } from '../router.js';
 import { api } from '../api.js';
 import { AMM } from '../amm.js';
 import { toast } from '../components/toast.js';
-import { esc, formatPoints, formatOdds, formatDate, formatRelativeTime } from '../utils.js';
+import { esc, formatPoints, formatOdds, formatDate } from '../utils.js';
+
+let portfolioData = null;
 
 export function renderPortfolio() {
     const user = state.currentUser;
@@ -21,48 +23,19 @@ export function renderPortfolio() {
         `;
     }
 
-    const markets = state.markets || [];
+    const pData = portfolioData || {
+        points: user.points,
+        portfolioNetWorth: user.points,
+        totalInvested: 0,
+        totalCurrentValue: 0,
+        latentPnl: 0,
+        winrate: 0,
+        openPositions: [],
+        transactions: user.transactions || []
+    };
 
-    // Collecte des positions actives (marchés ouverts)
-    const openPositions = [];
-    let totalInvestedInOpen = 0;
-    let totalCurrentValue = 0;
-
-    markets.forEach(m => {
-        const myBets = (m.bets || []).filter(b => b.userId === user.id);
-        const probs = AMM.getProbabilities(m);
-
-        myBets.forEach(b => {
-            const opt = m.options.find(o => o.id === b.optId);
-            const sim = AMM.simulateSell(m, b.optId, b.amount);
-            const curVal = m.status === 'open' ? sim.refundPoints : b.amount;
-            const pnl = curVal - b.amount;
-
-            if (m.status === 'open') {
-                totalInvestedInOpen += b.amount;
-                totalCurrentValue += curVal;
-                openPositions.push({
-                    market: m,
-                    bet: b,
-                    option: opt,
-                    currentProb: probs[b.optId] || 50,
-                    currentValue: curVal,
-                    pnl: pnl
-                });
-            }
-        });
-    });
-
-    // Transactions et historique
-    const txs = user.transactions || [];
-    const winTxs = txs.filter(t => t.desc && t.desc.startsWith("Gain '"));
-    const lossTxs = txs.filter(t => t.desc && t.desc.startsWith("Pari perdu '"));
-    const totalResolved = winTxs.length + lossTxs.length;
-    const winrate = totalResolved > 0 ? Math.round((winTxs.length / totalResolved) * 100) : 0;
-
-    const latentPnl = totalCurrentValue - totalInvestedInOpen;
-    const isLatentPositive = latentPnl >= 0;
-    const portfolioNetWorth = user.points + totalCurrentValue;
+    const openPositions = pData.openPositions || [];
+    const isLatentPositive = pData.latentPnl >= 0;
 
     return `
         <div class="portfolio-container">
@@ -72,28 +45,28 @@ export function renderPortfolio() {
             <div class="pnl-metrics-grid">
                 <div class="pnl-card">
                     <div class="pnl-card-title">Valeur Nette Totale</div>
-                    <div class="pnl-card-val" style="color:var(--text-primary);">${formatPoints(portfolioNetWorth)} <span style="font-size:0.9rem; font-weight:500;">pts</span></div>
-                    <div class="pnl-card-sub">Points libres + Positions en cours</div>
+                    <div class="pnl-card-val" style="color:var(--text-primary);">${formatPoints(pData.portfolioNetWorth)} <span style="font-size:0.85rem; font-weight:500;">pts</span></div>
+                    <div class="pnl-card-sub">Points libres + Valeur des positions</div>
                 </div>
 
                 <div class="pnl-card">
-                    <div class="pnl-card-title">Points Libres (Cash)</div>
-                    <div class="pnl-card-val" style="color:var(--accent-color);">${formatPoints(user.points)} <span style="font-size:0.9rem; font-weight:500;">pts</span></div>
-                    <div class="pnl-card-sub">Disponible pour miser</div>
+                    <div class="pnl-card-title">Points Disponibles</div>
+                    <div class="pnl-card-val" style="color:var(--accent-color);">${formatPoints(pData.points)} <span style="font-size:0.85rem; font-weight:500;">pts</span></div>
+                    <div class="pnl-card-sub">Prêts à être misés</div>
                 </div>
 
                 <div class="pnl-card">
                     <div class="pnl-card-title">Gains Latents (En cours)</div>
                     <div class="pnl-card-val" style="color:${isLatentPositive ? 'var(--yes-color)' : 'var(--no-color)'};">
-                        ${isLatentPositive ? '+' : ''}${formatPoints(latentPnl)} <span style="font-size:0.9rem; font-weight:500;">pts</span>
+                        ${isLatentPositive ? '+' : ''}${formatPoints(pData.latentPnl)} <span style="font-size:0.85rem; font-weight:500;">pts</span>
                     </div>
-                    <div class="pnl-card-sub">Sur ${formatPoints(totalInvestedInOpen)} pts investis</div>
+                    <div class="pnl-card-sub">Sur ${formatPoints(pData.totalInvested)} pts engagés</div>
                 </div>
 
                 <div class="pnl-card">
-                    <div class="pnl-card-title">Taux de Réussite (Winrate)</div>
-                    <div class="pnl-card-val" style="color:#eab308;">${winrate}%</div>
-                    <div class="pnl-card-sub">${winTxs.length} victoires / ${totalResolved} paris résolus</div>
+                    <div class="pnl-card-title">Taux de Réussite</div>
+                    <div class="pnl-card-val" style="color:#eab308;">${pData.winrate}%</div>
+                    <div class="pnl-card-sub">Sur les paris résolus</div>
                 </div>
             </div>
 
@@ -106,10 +79,12 @@ export function renderPortfolio() {
                 </div>
 
                 ${openPositions.length === 0 ? `
-                    <div style="padding:2rem; text-align:center; color:var(--text-secondary);">
-                        <p>Vous n'avez aucune position ouverte pour l'instant.</p>
-                        <button class="btn-primary" style="margin-top:0.75rem;" onclick="window.location.hash = '#/'">
-                            Explorer les marchés
+                    <div style="padding:2.5rem; text-align:center; color:var(--text-secondary);">
+                        <i class="fa-solid fa-ticket fa-2x" style="margin-bottom:0.75rem; opacity:0.6;"></i>
+                        <p style="font-weight:600; margin-bottom:0.25rem;">Aucune position ouverte actuellement</p>
+                        <p style="font-size:0.85rem; margin-bottom:1rem;">Explorez les marchés actifs pour placer vos prédictions.</p>
+                        <button class="btn-primary" onclick="window.location.hash = '#/'">
+                            <i class="fa-solid fa-fire"></i> Explorer les marchés
                         </button>
                     </div>
                 ` : `
@@ -118,11 +93,11 @@ export function renderPortfolio() {
                             <thead>
                                 <tr>
                                     <th>Marché</th>
-                                    <th>Choix</th>
+                                    <th>Option</th>
                                     <th>Mise</th>
                                     <th>Cote d'achat</th>
                                     <th>Cote actuelle</th>
-                                    <th>Valeur</th>
+                                    <th>Valeur Spot</th>
                                     <th>P&L</th>
                                     <th>Action</th>
                                 </tr>
@@ -130,30 +105,30 @@ export function renderPortfolio() {
                             <tbody>
                                 ${openPositions.map(pos => {
                                     const isPos = pos.pnl >= 0;
-                                    const buyOdds = AMM.probToDecimalOdds(pos.bet.buyProb || 50);
+                                    const buyOdds = AMM.probToDecimalOdds(pos.buyProb);
                                     const curOdds = AMM.probToDecimalOdds(pos.currentProb);
 
                                     return `
                                         <tr>
                                             <td>
-                                                <a href="#/market/${pos.market.id}" style="font-weight:600; color:var(--text-primary);">
-                                                    ${esc(pos.market.title)}
+                                                <a href="#/market/${pos.marketId}" style="font-weight:600; color:var(--text-primary);">
+                                                    ${esc(pos.marketTitle)}
                                                 </a>
                                             </td>
                                             <td>
-                                                <span style="font-weight:700; color:${pos.option ? pos.option.color : 'inherit'};">
-                                                    ${esc(pos.option ? pos.option.label : pos.bet.optId)}
+                                                <span style="font-weight:700; color:${pos.optColor || '#22c55e'};">
+                                                    ${esc(pos.optLabel)}
                                                 </span>
                                             </td>
-                                            <td><b>${formatPoints(pos.bet.amount)}</b> pts</td>
-                                            <td>x${formatOdds(buyOdds)} <span style="font-size:0.75rem; color:var(--text-secondary);">(${pos.bet.buyProb || 50}%)</span></td>
+                                            <td><b>${formatPoints(pos.amount)}</b> pts</td>
+                                            <td>x${formatOdds(buyOdds)} <span style="font-size:0.75rem; color:var(--text-secondary);">(${pos.buyProb}%)</span></td>
                                             <td>x${formatOdds(curOdds)} <span style="font-size:0.75rem; color:var(--text-secondary);">(${pos.currentProb}%)</span></td>
                                             <td><b>${formatPoints(pos.currentValue)}</b> pts</td>
                                             <td style="font-weight:700; color:${isPos ? 'var(--yes-color)' : 'var(--no-color)'};">
                                                 ${isPos ? '+' : ''}${formatPoints(pos.pnl)} pts
                                             </td>
                                             <td>
-                                                <button class="btn-outline cashout-btn" data-market-id="${pos.market.id}" data-bet-id="${pos.bet.id}" style="padding:0.35rem 0.75rem; font-size:0.8rem;">
+                                                <button class="btn-outline cashout-btn" data-market-id="${pos.marketId}" data-bet-id="${pos.betId}" style="padding:0.35rem 0.75rem; font-size:0.8rem;">
                                                     Cashout (~${formatPoints(pos.currentValue)})
                                                 </button>
                                             </td>
@@ -169,10 +144,10 @@ export function renderPortfolio() {
             <!-- Grand Livre des Transactions -->
             <div class="portfolio-section-card" style="margin-top:1.5rem;">
                 <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:1rem;">
-                    <i class="fa-solid fa-list-check"></i> Historique des Transactions Récentes
+                    <i class="fa-solid fa-list-check"></i> Historique des Transactions
                 </h3>
 
-                ${txs.length === 0 ? `
+                ${pData.transactions.length === 0 ? `
                     <p style="color:var(--text-secondary); text-align:center; padding:1.5rem;">Aucune transaction enregistrée.</p>
                 ` : `
                     <div class="table-responsive">
@@ -185,7 +160,7 @@ export function renderPortfolio() {
                                 </tr>
                             </thead>
                             <tbody>
-                                ${txs.slice(0, 30).map(t => {
+                                ${pData.transactions.slice(0, 30).map(t => {
                                     const isCredit = t.amount > 0;
                                     const isDebit = t.amount < 0;
 
@@ -209,6 +184,23 @@ export function renderPortfolio() {
 }
 
 export function attachPortfolioEvents() {
+    // Rechargement des données fraîches depuis le serveur
+    api.get('/api/users/portfolio')
+        .then(data => {
+            portfolioData = data;
+            // Si données différentes, rafraîchir la vue
+            const container = document.getElementById('app-container');
+            if (container && state.currentRoute === 'portfolio') {
+                container.innerHTML = renderPortfolio();
+                bindCashoutButtons();
+            }
+        })
+        .catch(() => {});
+
+    bindCashoutButtons();
+}
+
+function bindCashoutButtons() {
     document.querySelectorAll('.cashout-btn').forEach(btn => {
         btn.onclick = async () => {
             const mId = btn.dataset.marketId;
@@ -219,12 +211,9 @@ export function attachPortfolioEvents() {
             try {
                 const res = await api.post(`/api/markets/${mId}/cashout/${bId}`);
                 state.setUser(res.user);
-                const idx = state.markets.findIndex(m => m.id === mId);
-                if (idx !== -1) {
-                    state.markets[idx] = res.market;
-                    state.setMarkets([...state.markets]);
-                }
                 toast.success(`Cashout réussi : +${formatPoints(res.refund)} pts crédités !`);
+                // Recharger portfolio
+                portfolioData = await api.get('/api/users/portfolio');
                 router.renderCurrentView();
             } catch (err) {
                 toast.error(err.message || "Erreur de cashout");

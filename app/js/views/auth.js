@@ -1,5 +1,5 @@
 /**
- * PolyBoquette - Vue Authentification (Connexion & Inscription)
+ * PolyBoquette - Vue Authentification (Connexion & Inscription Num's)
  */
 
 import { state } from '../state.js';
@@ -7,21 +7,20 @@ import { router } from '../router.js';
 import { api } from '../api.js';
 import { toast } from '../components/toast.js';
 import { modal } from '../components/modal.js';
-import { esc } from '../utils.js';
 
 export function renderLogin() {
     return `
         <div class="auth-card">
             <div style="text-align:center; margin-bottom:1.5rem;">
-                <img src="logo.png" alt="PolyBoquette" style="height:60px; margin-bottom:0.75rem;">
+                <img src="logo.png" alt="PolyBoquette" style="height:55px; margin-bottom:0.75rem;">
                 <h2 style="font-size:1.4rem; font-weight:800; margin:0;">Connexion</h2>
                 <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:0.25rem;">PolyBoquette • Marchés Prédictifs</p>
             </div>
 
             <div style="display:flex; flex-direction:column; gap:1rem;">
                 <div>
-                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.35rem;">Nom d'utilisateur / Identifiant</label>
-                    <input type="text" id="loginUsername" class="input-full" placeholder="Identifiant" autocomplete="username">
+                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.35rem;">Num's (Identifiant)</label>
+                    <input type="text" id="loginNums" class="input-full" placeholder="Ex: 11-96(0) ou 11-96" autocomplete="username">
                 </div>
 
                 <div>
@@ -55,33 +54,24 @@ export function renderRegister() {
 
             <div style="display:flex; flex-direction:column; gap:0.85rem;">
                 <div>
-                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Nom & Prénom *</label>
-                    <input type="text" id="regName" class="input-full" placeholder="Ex: Jean Dupont">
+                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Num's * (Identifiant de connexion)</label>
+                    <input type="text" id="regNums" class="input-full" placeholder="Ex: 11-96(0) ou 11-96">
                 </div>
 
-                <div style="display:flex; gap:0.5rem;">
+                <div style="display:flex; gap:0.75rem;">
                     <div style="flex:1;">
-                        <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Bucque</label>
-                        <input type="text" id="regBuque" class="input-full" placeholder="F'OÜ">
+                        <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Prénom *</label>
+                        <input type="text" id="regFirstName" class="input-full" placeholder="Jean">
                     </div>
                     <div style="flex:1;">
-                        <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Num's</label>
-                        <input type="text" id="regNums" class="input-full" placeholder="11-96">
-                    </div>
-                    <div style="flex:1;">
-                        <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Prom's</label>
-                        <input type="text" id="regProms" class="input-full" placeholder="ME225">
+                        <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Nom *</label>
+                        <input type="text" id="regLastName" class="input-full" placeholder="Dupont">
                     </div>
                 </div>
 
                 <div>
-                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Adresse E-mail (optionnelle)</label>
+                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Adresse E-mail *</label>
                     <input type="email" id="regEmail" class="input-full" placeholder="jean.dupont@gadz.org">
-                </div>
-
-                <div>
-                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Identifiant de connexion *</label>
-                    <input type="text" id="regUsername" class="input-full" placeholder="Nom ou Pseudo unique">
                 </div>
 
                 <div>
@@ -90,37 +80,37 @@ export function renderRegister() {
                 </div>
 
                 <button class="btn-primary btn-block" id="doRegisterBtn" style="padding:0.85rem; margin-top:0.5rem;">
-                    <i class="fa-solid fa-user-plus"></i> Créer mon compte
+                    <i class="fa-solid fa-user-plus"></i> S'inscrire
                 </button>
             </div>
 
             <div style="text-align:center; margin-top:1.25rem; font-size:0.9rem; color:var(--text-secondary);">
-                Déjà inscrit ? <a href="#/login" style="font-weight:600; color:var(--accent-color);">Se connecter</a>
+                Déjà inscrit ? <a href="#/login" style="font-weight:600; color:var(--accent-color);">Se connecter avec son Num's</a>
             </div>
         </div>
     `;
 }
 
 export function attachAuthEvents() {
-    // 1. Connexion
+    // Connexion
     const loginBtn = document.getElementById('doLoginBtn');
     if (loginBtn) {
         const submitLogin = async () => {
-            const username = document.getElementById('loginUsername').value.trim();
+            const nums = document.getElementById('loginNums').value.trim();
             const password = document.getElementById('loginPassword').value;
-            if (!username || !password) return toast.error("Veuillez renseigner vos identifiants");
+            if (!nums || !password) return toast.error("Veuillez renseigner votre Num's et votre mot de passe");
 
             loginBtn.disabled = true;
             loginBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Connexion...';
 
             try {
-                const res = await api.post('/api/auth/login', { username, password });
+                const res = await api.post('/api/auth/login', { username: nums, password });
                 state.setUser(res.user);
                 toast.success(`Bienvenue, ${res.user.name} !`);
                 await router.fetchGlobalData();
                 router.navigate('/');
             } catch (err) {
-                toast.error(err.message || "Identifiants incorrects");
+                toast.error(err.message || "Num's ou mot de passe incorrect");
                 loginBtn.disabled = false;
                 loginBtn.innerHTML = '<i class="fa-solid fa-right-to-bracket"></i> Se connecter';
             }
@@ -133,20 +123,18 @@ export function attachAuthEvents() {
         }
     }
 
-    // 2. Inscription
+    // Inscription
     const regBtn = document.getElementById('doRegisterBtn');
     if (regBtn) {
         regBtn.onclick = async () => {
-            const name = document.getElementById('regName').value.trim();
-            const buque = document.getElementById('regBuque').value.trim();
             const nums = document.getElementById('regNums').value.trim();
-            const proms = document.getElementById('regProms').value.trim();
+            const firstName = document.getElementById('regFirstName').value.trim();
+            const lastName = document.getElementById('regLastName').value.trim();
             const email = document.getElementById('regEmail').value.trim();
-            const username = document.getElementById('regUsername').value.trim();
             const password = document.getElementById('regPassword').value;
 
-            if (!name || !username || !password) {
-                return toast.error("Veuillez renseigner votre nom, identifiant et mot de passe");
+            if (!nums || !firstName || !lastName || !password) {
+                return toast.error("Veuillez remplir votre Num's, Prénom, Nom et Mot de passe");
             }
             if (password.length < 6) {
                 return toast.error("Le mot de passe doit faire au moins 6 caractères");
@@ -157,42 +145,42 @@ export function attachAuthEvents() {
 
             try {
                 await api.post('/api/auth/register', {
-                    name, buque, nums, proms, email, username, password
+                    nums, firstName, lastName, email, password
                 });
                 toast.success("Inscription enregistrée ! Votre compte sera validé par l'administration.");
                 router.navigate('/login');
             } catch (err) {
                 toast.error(err.message || "Erreur lors de l'inscription");
                 regBtn.disabled = false;
-                regBtn.innerHTML = '<i class="fa-solid fa-user-plus"></i> Créer mon compte';
+                regBtn.innerHTML = '<i class="fa-solid fa-user-plus"></i> S\'inscrire';
             }
         };
     }
 
-    // 3. Mot de passe oublié
+    // Mot de passe oublié
     const forgotLink = document.getElementById('forgotPasswordLink');
     if (forgotLink) {
         forgotLink.onclick = (e) => {
             e.preventDefault();
             modal.show({
-                title: "Mot de passe oublié",
+                title: "Récupération d'accès",
                 content: `
                     <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.75rem;">
-                        Indiquez votre identifiant. Une demande sera transmise à l'administrateur pour réinitialiser votre accès.
+                        Indiquez votre Num's. Une demande de réinitialisation sera envoyée à l'administrateur.
                     </p>
-                    <label style="display:block; font-size:0.85rem; margin-bottom:0.25rem;">Identifiant de connexion</label>
-                    <input type="text" id="forgotUsernameInput" class="input-full" placeholder="Votre nom d'utilisateur">
+                    <label style="display:block; font-size:0.85rem; margin-bottom:0.25rem;">Num's</label>
+                    <input type="text" id="forgotNumsInput" class="input-full" placeholder="Ex: 11-96">
                 `,
-                confirmText: "Envoyer la demande",
+                confirmText: "Transmettre la demande",
                 onConfirm: async () => {
-                    const username = document.getElementById('forgotUsernameInput').value.trim();
-                    if (!username) {
-                        toast.error("Identifiant requis");
+                    const nums = document.getElementById('forgotNumsInput').value.trim();
+                    if (!nums) {
+                        toast.error("Num's requis");
                         throw new Error("Validation");
                     }
                     try {
-                        await api.post('/api/auth/forgot-password', { username });
-                        toast.success("Demande transmise à l'administrateur !");
+                        await api.post('/api/auth/forgot-password', { username: nums });
+                        toast.success("Demande transmise à l'administrateur");
                     } catch (err) {
                         toast.error(err.message || "Erreur");
                         throw err;

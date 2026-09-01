@@ -15,6 +15,7 @@ export function renderDashboard() {
     const markets = state.markets || [];
     const categories = state.categories || [];
     const searchQuery = state.searchQuery.toLowerCase().trim();
+    const isCompact = state.displayMode === 'compact';
 
     // 1. Daily Claim Banner
     let dailyBanner = '';
@@ -24,46 +25,52 @@ export function renderDashboard() {
             dailyBanner = `
                 <div class="daily-claim-banner">
                     <div style="display:flex; align-items:center; gap:0.75rem;">
-                        <i class="fa-solid fa-gift" style="font-size:1.5rem; color:#eab308;"></i>
+                        <i class="fa-solid fa-gift" style="font-size:1.3rem; color:#eab308;"></i>
                         <div>
-                            <div style="font-weight:700;">Bonus Quotidien disponible !</div>
-                            <div style="font-size:0.85rem; color:var(--text-secondary);">Récupérez vos 5 points de fidélité du jour.</div>
+                            <div style="font-weight:700; font-size:0.95rem;">Bonus Quotidien disponible !</div>
+                            <div style="font-size:0.8rem; color:var(--text-secondary);">Récupérez vos 5 points de fidélité.</div>
                         </div>
                     </div>
-                    <button class="btn-primary" id="claimDailyBtn" style="padding:0.5rem 1.25rem;">
-                        <i class="fa-solid fa-coins"></i> Récupérer +5 pts
+                    <button class="btn-primary" id="claimDailyBtn" style="padding:0.45rem 1rem; font-size:0.85rem;">
+                        <i class="fa-solid fa-coins"></i> +5 pts
                     </button>
                 </div>
             `;
         }
     }
 
-    // 2. Filtres et Recherche
+    // 2. Filtres, Recherche et Switch Mode Compact
     let html = `
         ${dailyBanner}
 
-        <!-- En-tête avec Recherche & Filtres -->
         <div class="dash-controls">
             <div class="search-bar-wrapper">
                 <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                <input type="text" id="dashSearchInput" value="${esc(state.searchQuery)}" placeholder="Rechercher un marché, un sujet, un mot-clé..." class="search-input">
+                <input type="text" id="dashSearchInput" value="${esc(state.searchQuery)}" placeholder="Rechercher un marché, un nom..." class="search-input">
                 ${state.searchQuery ? `<button class="search-clear-btn" id="clearSearchBtn"><i class="fa-solid fa-xmark"></i></button>` : ''}
             </div>
 
-            <div class="filter-pills-row">
-                <button class="filter-pill ${state.marketStatusFilter === 'open' ? 'active' : ''}" data-status="open">
-                    <i class="fa-solid fa-bolt"></i> En cours
-                </button>
-                <button class="filter-pill ${state.marketStatusFilter === 'all' ? 'active' : ''}" data-status="all">
-                    Tous les marchés
-                </button>
-                ${user ? `
-                    <button class="filter-pill ${state.marketStatusFilter === 'my_bets' ? 'active' : ''}" data-status="my_bets">
-                        <i class="fa-solid fa-user-check"></i> Mes Paris
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                <div class="filter-pills-row">
+                    <button class="filter-pill ${state.marketStatusFilter === 'open' ? 'active' : ''}" data-status="open">
+                        <i class="fa-solid fa-bolt"></i> En cours
                     </button>
-                ` : ''}
-                <button class="filter-pill ${state.marketStatusFilter === 'closed' ? 'active' : ''}" data-status="closed">
-                    <i class="fa-solid fa-flag-checkered"></i> Clôturés
+                    <button class="filter-pill ${state.marketStatusFilter === 'all' ? 'active' : ''}" data-status="all">
+                        Tous
+                    </button>
+                    ${user ? `
+                        <button class="filter-pill ${state.marketStatusFilter === 'my_bets' ? 'active' : ''}" data-status="my_bets">
+                            <i class="fa-solid fa-user-check"></i> Mes Paris
+                        </button>
+                    ` : ''}
+                    <button class="filter-pill ${state.marketStatusFilter === 'closed' ? 'active' : ''}" data-status="closed">
+                        <i class="fa-solid fa-flag-checkered"></i> Clôturés
+                    </button>
+                </div>
+
+                <!-- Toggle Mode Compact / Normal -->
+                <button class="btn-outline" id="toggleDisplayModeBtn" style="padding:0.35rem 0.75rem; font-size:0.8rem;" title="Changer l'affichage">
+                    ${isCompact ? '<i class="fa-solid fa-table-cells-large"></i> Vue Détaillée' : '<i class="fa-solid fa-compress"></i> Vue Compacte'}
                 </button>
             </div>
         </div>
@@ -81,21 +88,17 @@ export function renderDashboard() {
         </div>
     `;
 
-    // 3. Filtrage et Tri des marchés
+    // 3. Filtrage et Tri
     let filtered = markets.filter(m => {
-        // Catégorie
         if (state.selectedCategoryId !== 'all' && m.categoryId !== state.selectedCategoryId) return false;
-
-        // Statut
         if (state.marketStatusFilter === 'open' && m.status !== 'open') return false;
         if (state.marketStatusFilter === 'closed' && m.status !== 'resolved' && m.status !== 'cancelled') return false;
         if (state.marketStatusFilter === 'my_bets') {
             if (!user) return false;
-            const hasMyBet = (m.bets || []).some(b => b.userId === user.id);
+            const hasMyBet = (m.bets || []).some(b => String(b.userId) === String(user.id));
             if (!hasMyBet) return false;
         }
 
-        // Recherche texte
         if (searchQuery) {
             const titleMatch = m.title.toLowerCase().includes(searchQuery);
             const optMatch = (m.options || []).some(o => o.label.toLowerCase().includes(searchQuery));
@@ -105,10 +108,8 @@ export function renderDashboard() {
         return true;
     });
 
-    // Tri
     filtered.sort((a, b) => (b.volume || 0) - (a.volume || 0));
 
-    // Marchés épinglés en tête si l'utilisateur est connecté
     if (user && user.pinnedMarkets && user.pinnedMarkets.length > 0) {
         const pinnedSet = new Set(user.pinnedMarkets);
         filtered.sort((a, b) => {
@@ -121,19 +122,19 @@ export function renderDashboard() {
     if (filtered.length === 0) {
         html += `
             <div class="empty-state">
-                <i class="fa-solid fa-magnifying-glass fa-3x" style="color:var(--text-secondary); margin-bottom:1rem;"></i>
+                <i class="fa-solid fa-magnifying-glass fa-2x" style="color:var(--text-secondary); margin-bottom:0.75rem;"></i>
                 <h3>Aucun marché trouvé</h3>
-                <p style="color:var(--text-secondary); font-size:0.9rem;">Essayez de modifier vos filtres ou de chercher d'autres termes.</p>
-                <button class="btn-outline" style="margin-top:1rem;" onclick="window.location.hash = '#/proposals'">
-                    <i class="fa-solid fa-lightbulb"></i> Proposer un nouveau pari
+                <p style="color:var(--text-secondary); font-size:0.85rem;">Essayez de modifier vos filtres.</p>
+                <button class="btn-outline" style="margin-top:0.75rem;" onclick="window.location.hash = '#/proposals'">
+                    <i class="fa-solid fa-lightbulb"></i> Proposer une idée
                 </button>
             </div>
         `;
         return html;
     }
 
-    // Grille des marchés
-    html += `<div class="market-grid">`;
+    // 4. Grille des Marchés (Support Compact & Détaillé)
+    html += `<div class="market-grid ${isCompact ? 'grid-compact' : ''}">`;
     filtered.forEach(m => {
         const probs = AMM.getProbabilities(m);
         const sortedOpts = [...m.options].sort((a, b) => (probs[b.id] || 0) - (probs[a.id] || 0));
@@ -141,12 +142,17 @@ export function renderDashboard() {
         const remaining = getRemainingTime(m.pauseAt);
         const isOpen = m.status === 'open' && (!remaining || !remaining.isExpired);
 
+        // En mode compact : max 3 options affichées
+        const maxOptsToShow = isCompact ? 3 : sortedOpts.length;
+        const visibleOpts = sortedOpts.slice(0, maxOptsToShow);
+        const hiddenOptsCount = sortedOpts.length - maxOptsToShow;
+
         html += `
-            <div class="market-card ${!isOpen ? 'market-card-closed' : ''}" data-market-id="${m.id}">
+            <div class="market-card ${isCompact ? 'card-compact' : ''} ${!isOpen ? 'market-card-closed' : ''}" data-market-id="${m.id}">
                 <div class="market-card-header">
-                    <div style="display:flex; align-items:flex-start; gap:0.75rem; flex:1;">
-                        <img src="${esc(m.image)}" alt="Image" class="market-thumbnail" onerror="this.src='logo.png'">
-                        <div style="flex:1;">
+                    <div style="display:flex; align-items:flex-start; gap:0.6rem; flex:1; min-width:0;">
+                        <img src="${esc(m.image)}" alt="Cover" class="market-thumbnail" onerror="this.src='logo.png'">
+                        <div style="flex:1; min-width:0;">
                             <div class="market-card-title">${esc(m.title)}</div>
                             <div class="market-card-meta">
                                 <span><i class="fa-solid fa-chart-simple"></i> ${formatPoints(m.volume)} pts</span>
@@ -161,15 +167,15 @@ export function renderDashboard() {
                         </div>
                     </div>
                     ${user ? `
-                        <button class="pin-btn ${isPinned ? 'pinned' : ''}" data-pin-id="${m.id}" title="${isPinned ? 'Désépingler' : 'Épingler en haut'}">
+                        <button class="pin-btn ${isPinned ? 'pinned' : ''}" data-pin-id="${m.id}" title="${isPinned ? 'Désépingler' : 'Épingler'}">
                             <i class="fa-solid fa-thumbtack"></i>
                         </button>
                     ` : ''}
                 </div>
 
-                <!-- Options & Cotes -->
+                <!-- Options -->
                 <div class="market-card-options">
-                    ${sortedOpts.map(opt => {
+                    ${visibleOpts.map(opt => {
                         const prob = probs[opt.id] || 50;
                         const decOdds = AMM.probToDecimalOdds(prob);
                         return `
@@ -185,6 +191,12 @@ export function renderDashboard() {
                             </div>
                         `;
                     }).join('')}
+
+                    ${hiddenOptsCount > 0 ? `
+                        <div class="hidden-opts-indicator">
+                            +${hiddenOptsCount} autre${hiddenOptsCount > 1 ? 's' : ''} choix (cliquer pour voir)
+                        </div>
+                    ` : ''}
                 </div>
             </div>
         `;
@@ -195,32 +207,41 @@ export function renderDashboard() {
 }
 
 export function attachDashboardEvents() {
-    // 1. Daily Claim
+    // Daily Claim
     const claimBtn = document.getElementById('claimDailyBtn');
     if (claimBtn) {
         claimBtn.onclick = async () => {
             claimBtn.disabled = true;
-            claimBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Récupération...';
+            claimBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
             try {
                 const res = await api.post('/api/auth/daily-claim');
                 state.setUser(res.user);
                 toast.success("+5 points ajoutés à votre solde !");
                 router.renderCurrentView();
             } catch (err) {
-                toast.error(err.message || "Erreur lors de la récupération du bonus");
+                toast.error(err.message || "Erreur de récupération");
                 claimBtn.disabled = false;
-                claimBtn.innerHTML = '<i class="fa-solid fa-coins"></i> Récupérer +5 pts';
+                claimBtn.innerHTML = '<i class="fa-solid fa-coins"></i> +5 pts';
             }
         };
     }
 
-    // 2. Recherche en direct
+    // Switch Display Mode
+    const modeBtn = document.getElementById('toggleDisplayModeBtn');
+    if (modeBtn) {
+        modeBtn.onclick = () => {
+            const nextMode = state.displayMode === 'compact' ? 'detailed' : 'compact';
+            state.setDisplayMode(nextMode);
+            router.renderCurrentView();
+        };
+    }
+
+    // Recherche
     const searchInput = document.getElementById('dashSearchInput');
     if (searchInput) {
         searchInput.oninput = (e) => {
             state.searchQuery = e.target.value;
             router.renderCurrentView();
-            // Garder le focus
             const newIn = document.getElementById('dashSearchInput');
             if (newIn) {
                 newIn.focus();
@@ -237,7 +258,7 @@ export function attachDashboardEvents() {
         };
     }
 
-    // 3. Filtres statut
+    // Filtres statut
     document.querySelectorAll('.filter-pill').forEach(btn => {
         btn.onclick = () => {
             state.marketStatusFilter = btn.dataset.status;
@@ -245,7 +266,7 @@ export function attachDashboardEvents() {
         };
     });
 
-    // 4. Onglets Catégories
+    // Catégories
     document.querySelectorAll('.cat-tab').forEach(btn => {
         btn.onclick = () => {
             state.selectedCategoryId = btn.dataset.cat;
@@ -253,7 +274,7 @@ export function attachDashboardEvents() {
         };
     });
 
-    // 5. Clics sur les cartes de marché -> Navigation détaillée
+    // Clic Carte -> Détail
     document.querySelectorAll('.market-card').forEach(card => {
         card.onclick = (e) => {
             if (e.target.closest('.pin-btn') || e.target.closest('.option-row')) return;
@@ -262,7 +283,7 @@ export function attachDashboardEvents() {
         };
     });
 
-    // 6. Clic direct sur une cote -> Ouvre le Bet Slip instantanément
+    // Clic Option -> Bet Slip
     document.querySelectorAll('.option-row').forEach(row => {
         row.onclick = (e) => {
             e.stopPropagation();
@@ -272,7 +293,7 @@ export function attachDashboardEvents() {
         };
     });
 
-    // 7. Épinglage
+    // Épinglage
     document.querySelectorAll('.pin-btn').forEach(btn => {
         btn.onclick = async (e) => {
             e.stopPropagation();
@@ -283,7 +304,7 @@ export function attachDashboardEvents() {
                 toast.info(res.pinned ? "Marché épinglé" : "Marché désépinglé");
                 router.renderCurrentView();
             } catch (err) {
-                toast.error("Impossible d'épingler le marché");
+                toast.error("Impossible d'épingler");
             }
         };
     });

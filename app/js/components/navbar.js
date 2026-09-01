@@ -12,7 +12,7 @@ export const navbar = {
         const navActions = document.querySelector('.nav-actions');
         if (!navActions) return;
 
-        // Theme Toggle Icon
+        // Theme Toggle
         const themeBtn = document.getElementById('themeToggle');
         if (themeBtn) {
             themeBtn.innerHTML = state.theme === 'dark' 
@@ -24,12 +24,10 @@ export const navbar = {
             };
         }
 
-        // User Pill / Actions
         const userPill = document.getElementById('userPill');
         const authActions = document.getElementById('authActions');
         const logoutBtn = document.getElementById('logoutBtn');
 
-        // Clean extra buttons
         document.querySelectorAll('.nav-custom-btn').forEach(el => el.remove());
 
         if (user) {
@@ -37,31 +35,30 @@ export const navbar = {
                 userPill.classList.remove('hidden');
                 userPill.style.cursor = 'pointer';
                 userPill.onclick = () => router.navigate('/profile');
-                document.getElementById('userName').textContent = user.name;
+                // Afficher Prénom Nom (ou Bucque / Nom)
+                document.getElementById('userName').textContent = user.name || user.firstName || 'Gadzarts';
                 document.getElementById('userPoints').innerHTML = `<i class="fa-solid fa-coins"></i> ${formatPoints(user.points)}`;
             }
             if (authActions) authActions.classList.add('hidden');
             if (logoutBtn) logoutBtn.classList.remove('hidden');
 
-            // Proposals Button
+            // Desktop Buttons (hidden on mobile via .hide-mobile)
             const propBtn = document.createElement('button');
-            propBtn.className = 'btn-outline nav-custom-btn';
-            propBtn.innerHTML = '<i class="fa-solid fa-lightbulb"></i> <span class="hide-mobile">Proposer</span>';
+            propBtn.className = 'btn-outline nav-custom-btn hide-mobile';
+            propBtn.innerHTML = '<i class="fa-solid fa-lightbulb"></i> <span>Proposer</span>';
             propBtn.onclick = () => router.navigate('/proposals');
             navActions.insertBefore(propBtn, authActions);
 
-            // Portfolio Button
             const portBtn = document.createElement('button');
-            portBtn.className = 'btn-outline nav-custom-btn';
-            portBtn.innerHTML = '<i class="fa-solid fa-wallet"></i> <span class="hide-mobile">Portefeuille</span>';
+            portBtn.className = 'btn-outline nav-custom-btn hide-mobile';
+            portBtn.innerHTML = '<i class="fa-solid fa-wallet"></i> <span>Portefeuille</span>';
             portBtn.onclick = () => router.navigate('/portfolio');
             navActions.insertBefore(portBtn, authActions);
 
-            // Admin Button (if role admin)
             if (user.role === 'admin') {
                 const admBtn = document.createElement('button');
-                admBtn.className = 'btn-primary nav-custom-btn';
-                admBtn.innerHTML = '<i class="fa-solid fa-shield-halved"></i> <span class="hide-mobile">Admin</span>';
+                admBtn.className = 'btn-primary nav-custom-btn hide-mobile';
+                admBtn.innerHTML = '<i class="fa-solid fa-shield-halved"></i> <span>Admin</span>';
                 admBtn.onclick = () => router.navigate('/admin');
                 navActions.insertBefore(admBtn, authActions);
             }
@@ -93,7 +90,7 @@ export const navbar = {
             </a>
             ${user ? `
                 <a href="#/portfolio" class="bottom-nav-item ${current === 'portfolio' ? 'active' : ''}">
-                    <i class="fa-solid fa-chart-pie"></i>
+                    <i class="fa-solid fa-wallet"></i>
                     <span>Paris</span>
                 </a>
                 <a href="#/proposals" class="bottom-nav-item ${current === 'proposals' ? 'active' : ''}">

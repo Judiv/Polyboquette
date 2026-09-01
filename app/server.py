@@ -4,9 +4,9 @@ PolyBoquette - Backend Flask (API REST & SSE Temps Réel)
 Architecture :
 - Persistance PostgreSQL (prod) ou data/db.json (local)
 - Moteur AMM (Constant Product Market Maker)
-- Flux temps réel Server-Sent Events (/api/stream)
-- Sessions cookies HTTPOnly signées
-- Export CSV pour l'administration
+- Portefeuille & Positions en temps réel (/api/users/portfolio)
+- Suite d'Administration complète (Gestion des membres, modération, freeze, audit, logs)
+- Auth Num's + Mot de passe
 """
 
 import os
@@ -65,7 +65,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 USE_PG = PSYCOPG2_AVAILABLE and bool(DATABASE_URL)
 
 DEFAULT_DB = {
-    "version": 8,
+    "version": 9,
     "users": {},
     "markets": [],
     "categories": [
@@ -121,10 +121,6 @@ def _check_rate_limit(ip: str) -> bool:
 def _get_client_ip():
     return request.remote_addr or "127.0.0.1"
 
-_EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
-def _is_valid_email(email: str) -> bool:
-    return bool(_EMAIL_RE.match(email)) and len(email) <= 200
-
 # ──────────────────────────────────────────────────────────────────────────────
 # DATABASE FUNCTIONS & MIGRATIONS
 # ──────────────────────────────────────────────────────────────────────────────
@@ -157,6 +153,8 @@ def _migrate(db):
         if "pinnedMarkets" not in u: u["pinnedMarkets"] = []
         if "session_token" not in u: u["session_token"] = None
         if "email" not in u: u["email"] = ""
+        if "firstName" not in u: u["firstName"] = u.get("name", "").split(" ")[0] if " " in u.get("name", "") else u.get("name", "")
+        if "lastName" not in u: u["lastName"] = " ".join(u.get("name", "").split(" ")[1:]) if " " in u.get("name", "") else ""
         if u.get("role") != "admin" and "superAdmin" not in u:
             u["superAdmin"] = False
 
@@ -167,7 +165,6 @@ def _migrate(db):
         if "categoryId" not in m: m["categoryId"] = None
         if "order" not in m: m["order"] = 0
         if "poolReserves" not in m:
-            # Initialise les réserves AMM si absentes
             m["poolReserves"] = {o["id"]: max(50, o.get("shares", 100)) for o in m["options"]}
 
     return db
@@ -189,13 +186,16 @@ def _ensure_admin(db):
     db["users"][admin_id] = {
         "id": admin_id,
         "username": username,
+        "nums": "00-00",
+        "firstName": "Admin",
+        "lastName": "Système",
         "password": generate_password_hash(raw_pwd),
         "name": display,
         "role": "admin",
         "superAdmin": True,
         "status": "active",
         "points": 1000,
-        "buque": "", "nums": "", "proms": "",
+        "buque": "", "proms": "",
         "transactions": [],
         "pinnedMarkets": [],
         "session_token": None
@@ -399,14 +399,12 @@ def sse_stream():
         with _sse_lock:
             _sse_clients.append(client_queue)
         try:
-            # Message de bienvenue
             yield f"event: connected\ndata: {json.dumps({'status': 'ok'})}\n\n"
             while True:
                 try:
                     msg = client_queue.get(timeout=25)
                     yield msg
                 except queue.Empty:
-                    # Ping keep-alive
                     yield ": keepalive\n\n"
         finally:
             with _sse_lock:
@@ -440,14 +438,26 @@ def auth_login():
         return jsonify({"error": "Trop de tentatives. Réessayez dans une minute."}), 429
 
     data = request.get_json() or {}
+    identifier = (data.get("username") or data.get("nums") or "").strip().lower()
+    password   = data.get("password") or ""
+
     db = load_db()
-    user = next((u for u in db["users"].values() if u["username"] == data.get("username")), None)
-    if not user or not check_password_hash(user.get("password", ""), data.get("password") or ""):
-        return jsonify({"error": "Identifiants incorrects"}), 401
-    if user["status"] == "pending":
+    # Recherche par Num's, ou username, ou email
+    user = next((
+        u for u in db["users"].values()
+        if (u.get("nums") and u["nums"].strip().lower() == identifier)
+        or (u.get("username") and u["username"].strip().lower() == identifier)
+        or (u.get("email") and u["email"].strip().lower() == identifier)
+    ), None)
+
+    if not user or not check_password_hash(user.get("password", ""), password):
+        return jsonify({"error": "Num's ou mot de passe incorrect"}), 401
+    if user.get("status") == "pending":
         return jsonify({"error": "Compte en attente de validation par l'administration"}), 403
-    if user["status"] == "rejected":
+    if user.get("status") == "rejected":
         return jsonify({"error": "Compte non approuvé"}), 403
+    if user.get("status") == "frozen":
+        return jsonify({"error": "Compte suspendu / gelé par l'administration"}), 403
 
     token = secrets.token_hex(32)
     user["session_token"] = token
@@ -468,32 +478,44 @@ def auth_register():
     if _check_rate_limit(ip):
         return jsonify({"error": "Trop de tentatives. Réessayez dans une minute."}), 429
     data = request.get_json() or {}
-    username = (data.get("username") or "").strip()
-    password = (data.get("password") or "").strip()
-    name     = (data.get("name") or "").strip()
-    email    = (data.get("email") or "").strip()
+    nums       = (data.get("nums") or "").strip()
+    first_name = (data.get("firstName") or "").strip()
+    last_name  = (data.get("lastName") or "").strip()
+    email      = (data.get("email") or "").strip()
+    password   = (data.get("password") or "").strip()
 
-    if not username or not password or not name:
-        return jsonify({"error": "Nom, identifiant et mot de passe requis"}), 400
+    # Si nom complet passé en un seul champ
+    if not first_name and data.get("name"):
+        parts = data["name"].strip().split(" ")
+        first_name = parts[0]
+        last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+    if not nums or not first_name or not password:
+        return jsonify({"error": "Num's, Prénom, Nom et mot de passe requis"}), 400
     if len(password) < 6:
         return jsonify({"error": "Le mot de passe doit faire au moins 6 caractères"}), 400
 
     db = load_db()
-    if any(u["username"].lower() == username.lower() for u in db["users"].values()):
-        return jsonify({"error": "Cet identifiant est déjà utilisé"}), 409
+    # Vérifier doublon sur les Num's
+    if any(u.get("nums") and u["nums"].strip().lower() == nums.lower() for u in db["users"].values()):
+        return jsonify({"error": "Ce Num's est déjà enregistré"}), 409
 
+    display_name = f"{first_name} {last_name}".strip()
     new_id = "u" + secrets.token_hex(6)
+
     db["users"][new_id] = {
         "id": new_id,
-        "username": username,
-        "password": generate_password_hash(password),
-        "name": name,
+        "username": nums,
+        "nums": nums,
+        "firstName": first_name,
+        "lastName": last_name,
+        "name": display_name,
         "email": email,
+        "password": generate_password_hash(password),
         "role": "user",
         "status": "pending",
         "points": 100,
         "buque": data.get("buque", ""),
-        "nums":  data.get("nums", ""),
         "proms": data.get("proms", ""),
         "transactions": [],
         "pinnedMarkets": [],
@@ -559,9 +581,14 @@ def auth_change_email():
 @app.route("/api/auth/forgot-password", methods=["POST"])
 def auth_forgot_password():
     data = request.get_json() or {}
-    username = (data.get("username") or "").strip()
+    identifier = (data.get("username") or data.get("nums") or "").strip().lower()
     db = load_db()
-    user = next((u for u in db["users"].values() if u["username"].lower() == username.lower()), None)
+    user = next((
+        u for u in db["users"].values()
+        if (u.get("nums") and u["nums"].strip().lower() == identifier)
+        or (u.get("username") and u["username"].strip().lower() == identifier)
+    ), None)
+
     if user:
         req_id = "pr" + secrets.token_hex(6)
         db.setdefault("password_reset_requests", [])
@@ -570,12 +597,88 @@ def auth_forgot_password():
                 "id": req_id,
                 "userId": user["id"],
                 "userName": user["name"],
-                "username": user["username"],
+                "username": user.get("nums") or user.get("username"),
                 "email": user.get("email", ""),
                 "time": datetime.now(timezone.utc).isoformat()
             })
             save_db(db)
     return jsonify({"ok": True})
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PORTEFEUILLE & POSITIONS OUVERTES
+# ──────────────────────────────────────────────────────────────────────────────
+@app.route("/api/users/portfolio")
+@login_required
+def get_user_portfolio():
+    """
+    Retourne la liste exhaustive des positions ouvertes de l'utilisateur
+    calculées en direct avec leur valeur de cashout spot.
+    """
+    db = load_db()
+    user = db["users"].get(session["user_id"])
+    if not user: return jsonify({"error": "Non trouvé"}), 404
+
+    open_positions = []
+    total_invested = 0
+    total_current_val = 0
+
+    for m in db.get("markets", []):
+        probs = compute_probs(m)
+        reserves = m.get("poolReserves") or {}
+        user_bets = [b for b in m.get("bets", []) if str(b.get("userId")) == str(user["id"])]
+
+        for b in user_bets:
+            opt = next((o for o in m.get("options", []) if o["id"] == b["optId"]), None)
+            amount = b.get("amount", 0)
+            shares = b.get("shares") or amount
+
+            # Calcul de valeur actuelle
+            if m.get("status") == "open":
+                cur_prob = probs.get(b["optId"], 50)
+                if len(m.get("options", [])) == 2 and reserves:
+                    other_opt = next((o for o in m["options"] if o["id"] != b["optId"]), None)
+                    if other_opt:
+                        y = reserves.get(b["optId"], 100)
+                        n = reserves.get(other_opt["id"], 100)
+                        cur_val = max(1, int((n * shares) / (y + shares)))
+                    else:
+                        cur_val = max(1, int(shares * (cur_prob / 100)))
+                else:
+                    cur_val = max(1, int(shares * (cur_prob / 100)))
+
+                total_invested += amount
+                total_current_val += cur_val
+                open_positions.append({
+                    "marketId": m["id"],
+                    "marketTitle": m["title"],
+                    "betId": b["id"],
+                    "optId": b["optId"],
+                    "optLabel": opt["label"] if opt else b["optId"],
+                    "optColor": opt.get("color", "#22c55e") if opt else "#22c55e",
+                    "amount": amount,
+                    "shares": shares,
+                    "buyProb": b.get("buyProb", cur_prob),
+                    "currentProb": cur_prob,
+                    "currentValue": cur_val,
+                    "pnl": cur_val - amount
+                })
+
+    txs = user.get("transactions", [])
+    win_txs = [t for t in txs if t.get("desc", "").startswith("Gain '")]
+    loss_txs = [t for t in txs if t.get("desc", "").startswith("Pari perdu '")]
+    tot_resolved = len(win_txs) + len(loss_txs)
+    winrate = round((len(win_txs) / tot_resolved) * 100) if tot_resolved > 0 else 0
+
+    return jsonify({
+        "points": user.get("points", 0),
+        "portfolioNetWorth": user.get("points", 0) + total_current_val,
+        "totalInvested": total_invested,
+        "totalCurrentValue": total_current_val,
+        "latentPnl": total_current_val - total_invested,
+        "winrate": winrate,
+        "openPositions": open_positions,
+        "transactions": txs
+    })
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MARCHÉS & MOTEUR AMM
@@ -601,9 +704,6 @@ def get_market(market_id):
 @app.route("/api/markets/<market_id>/buy", methods=["POST"])
 @login_required
 def amm_buy_bet(market_id):
-    """
-    Exécution d'un achat d'actions via le moteur AMM (CPMM).
-    """
     data = request.get_json() or {}
     opt_id = data.get("optId")
     amount = data.get("amount", 0)
@@ -621,15 +721,13 @@ def amm_buy_bet(market_id):
         opt = next((o for o in m["options"] if o["id"] == opt_id), None)
         if not opt: return jsonify({"error": "Option invalide"}), 400
 
-        # Initialisation réserves AMM si absentes
         if "poolReserves" not in m:
             m["poolReserves"] = {o["id"]: 100 for o in m["options"]}
 
-        # Calcul AMM CPMM
         current_probs = compute_probs(m)
         cur_prob = current_probs.get(opt_id, 50)
-
         reserves = m["poolReserves"]
+
         if len(m["options"]) == 2:
             other_opt = next(o for o in m["options"] if o["id"] != opt_id)
             y = reserves.get(opt_id, 100)
@@ -637,7 +735,6 @@ def amm_buy_bet(market_id):
             delta_y = (y * amount) / (n + amount)
             shares_bought = int(amount + delta_y)
 
-            # Mise à jour réserves
             reserves[opt_id] = max(10, int(y - delta_y))
             reserves[other_opt["id"]] = int(n + amount)
         else:
@@ -645,7 +742,6 @@ def amm_buy_bet(market_id):
             shares_bought = int(amount * mult)
             reserves[opt_id] = reserves.get(opt_id, 100) + amount
 
-        # Débit utilisateur & crédit marché
         user["points"] -= amount
         m["volume"] = (m.get("volume") or 0) + amount
         opt["shares"] = (opt.get("shares") or 0) + amount
@@ -653,8 +749,7 @@ def amm_buy_bet(market_id):
         new_probs = compute_probs(m)
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        # Position de l'utilisateur
-        existing = next((b for b in m["bets"] if b["userId"] == user["id"] and b["optId"] == opt_id), None)
+        existing = next((b for b in m["bets"] if str(b["userId"]) == str(user["id"]) and b["optId"] == opt_id), None)
         if existing:
             old_amt = existing["amount"]
             tot_amt = old_amt + amount
@@ -673,7 +768,6 @@ def amm_buy_bet(market_id):
                 "time": now_iso
             })
 
-        # Historique des cotes
         time_label = datetime.now(timezone.utc).strftime("%H:%M")
         m.setdefault("history", []).append({"time": time_label, **new_probs})
         if len(m["history"]) > 100: m["history"] = m["history"][-100:]
@@ -687,9 +781,6 @@ def amm_buy_bet(market_id):
 @app.route("/api/markets/<market_id>/cashout/<bet_id>", methods=["POST"])
 @login_required
 def amm_cashout_bet(market_id, bet_id):
-    """
-    Cashout / Revente de parts au prix spot AMM.
-    """
     with _db_lock:
         db = load_db()
         user = db["users"].get(session["user_id"])
@@ -700,9 +791,8 @@ def amm_cashout_bet(market_id, bet_id):
         bet_idx = next((i for i, b in enumerate(m["bets"]) if b["id"] == bet_id), None)
         if bet_idx is None: return jsonify({"error": "Pari introuvable"}), 404
         bet = m["bets"][bet_idx]
-        if bet["userId"] != user["id"]: return jsonify({"error": "Accès refusé"}), 403
+        if str(bet["userId"]) != str(user["id"]): return jsonify({"error": "Accès refusé"}), 403
 
-        # Calcul remboursement AMM
         cur_probs = compute_probs(m)
         cur_prob = cur_probs.get(bet["optId"], 50)
         reserves = m.setdefault("poolReserves", {o["id"]: 100 for o in m["options"]})
@@ -797,13 +887,129 @@ def handle_proposals():
     return jsonify(proposal), 201
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ADMIN : VALIDATIONS, GESTION, CLÔTURES & EXPORT CSV
+# SUITE D'ADMINISTRATION COMPLÈTE
 # ──────────────────────────────────────────────────────────────────────────────
 @app.route("/api/admin/users")
 @admin_required
 def admin_get_users():
     db = load_db()
     return jsonify([safe_user(u) for u in db["users"].values()])
+
+@app.route("/api/admin/users/<user_id>/grant", methods=["POST"])
+@admin_required
+def admin_grant_points(user_id):
+    """Crédite ou débite des points à un utilisateur."""
+    data = request.get_json() or {}
+    amount = data.get("amount", 0)
+    reason = (data.get("reason") or "Ajustement administratif").strip()
+
+    if not isinstance(amount, int) or amount == 0:
+        return jsonify({"error": "Montant invalide"}), 400
+
+    with _db_lock:
+        db = load_db()
+        user = db["users"].get(user_id)
+        if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
+
+        user["points"] = max(0, user.get("points", 0) + amount)
+        sign = "+" if amount > 0 else ""
+        add_tx(user, f"Admin: {sign}{amount} pts ({reason})", amount)
+
+        _log_admin_action(db, "grant_points", f"{sign}{amount} pts accordés à {user['name']} (@{user.get('nums') or user.get('username')}) : {reason}")
+        save_db(db)
+        return jsonify({"ok": True, "user": safe_user(user)})
+
+@app.route("/api/admin/users/<user_id>/toggle-status", methods=["POST"])
+@admin_required
+def admin_toggle_user_status(user_id):
+    """Bascule le statut d'un compte (active <-> frozen / suspended)."""
+    db = load_db()
+    user = db["users"].get(user_id)
+    if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
+    if user.get("superAdmin"): return jsonify({"error": "Impossible de suspendre le super-admin"}), 400
+
+    current = user.get("status", "active")
+    new_status = "frozen" if current == "active" else "active"
+    user["status"] = new_status
+    if new_status == "frozen":
+        user["session_token"] = secrets.token_hex(32) # révoque la session immédiatement
+
+    _log_admin_action(db, "toggle_status", f"Compte de {user['name']} passé à l'état '{new_status}'")
+    save_db(db)
+    return jsonify({"ok": True, "status": new_status})
+
+@app.route("/api/admin/users/<user_id>/toggle-role", methods=["POST"])
+@admin_required
+def admin_toggle_user_role(user_id):
+    db = load_db()
+    me = db["users"].get(session["user_id"])
+    if not me or not me.get("superAdmin"):
+        return jsonify({"error": "Réservé au super-administrateur"}), 403
+
+    user = db["users"].get(user_id)
+    if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
+    if user["id"] == me["id"]: return jsonify({"error": "Action impossible sur soi-même"}), 400
+
+    new_role = "admin" if user.get("role") != "admin" else "user"
+    user["role"] = new_role
+    _log_admin_action(db, "toggle_role", f"Rôle de {user['name']} modifié en '{new_role}'")
+    save_db(db)
+    return jsonify({"ok": True, "role": new_role})
+
+@app.route("/api/admin/users/<user_id>/kick", methods=["POST"])
+@admin_required
+def admin_kick_user(user_id):
+    """Déconnecte de force un utilisateur de tous ses appareils."""
+    db = load_db()
+    user = db["users"].get(user_id)
+    if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
+    user["session_token"] = secrets.token_hex(32)
+    _log_admin_action(db, "kick_user", f"Déconnexion forcée de {user['name']}")
+    save_db(db)
+    return jsonify({"ok": True, "message": f"{user['name']} a été déconnecté"})
+
+@app.route("/api/admin/users/<user_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_user(user_id):
+    db = load_db()
+    user = db["users"].get(user_id)
+    if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
+    if user.get("role") == "admin": return jsonify({"error": "Impossible de supprimer un administrateur"}), 400
+
+    _log_admin_action(db, "delete_user", f"Suppression définitive du compte de {user['name']}")
+    del db["users"][user_id]
+    save_db(db)
+    return jsonify({"ok": True})
+
+@app.route("/api/admin/users/<user_id>/history")
+@admin_required
+def admin_get_user_history(user_id):
+    """Retourne l'historique complet des transactions et paris de l'utilisateur."""
+    db = load_db()
+    user = db["users"].get(user_id)
+    if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
+
+    user_bets = []
+    for m in db.get("markets", []):
+        for b in m.get("bets", []):
+            if str(b.get("userId")) == str(user_id):
+                opt = next((o for o in m.get("options", []) if o["id"] == b["optId"]), None)
+                user_bets.append({
+                    "marketId": m["id"],
+                    "marketTitle": m["title"],
+                    "marketStatus": m["status"],
+                    "optLabel": opt["label"] if opt else b["optId"],
+                    "amount": b.get("amount", 0),
+                    "shares": b.get("shares") or b.get("amount", 0),
+                    "buyProb": b.get("buyProb", 50),
+                    "time": b.get("time", "")
+                })
+
+    return jsonify({
+        "user": safe_user(user),
+        "transactions": user.get("transactions", []),
+        "bets": user_bets
+    })
 
 @app.route("/api/admin/users/<user_id>/approve", methods=["POST"])
 @admin_required
@@ -812,7 +1018,7 @@ def admin_approve_user(user_id):
     user = db["users"].get(user_id)
     if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
     user["status"] = "active"
-    _log_admin_action(db, "approve_user", f"Approbation de {user['name']} (@{user['username']})")
+    _log_admin_action(db, "approve_user", f"Approbation de {user['name']} (@{user.get('nums') or user.get('username')})")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -823,14 +1029,13 @@ def admin_reject_user(user_id):
     user = db["users"].get(user_id)
     if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
     user["status"] = "rejected"
-    _log_admin_action(db, "reject_user", f"Rejet de {user['name']} (@{user['username']})")
+    _log_admin_action(db, "reject_user", f"Rejet de {user['name']}")
     save_db(db)
     return jsonify({"ok": True})
 
 @app.route("/api/admin/users/batch-approve", methods=["POST"])
 @admin_required
 def admin_batch_approve_users():
-    """Approuve toutes les inscriptions en attente d'un coup."""
     db = load_db()
     count = 0
     for u in db["users"].values():
@@ -882,12 +1087,45 @@ def admin_create_market():
     broadcast_sse("market_update", new_market)
     return jsonify(new_market), 201
 
+@app.route("/api/admin/markets/<market_id>/rename", methods=["POST"])
+@admin_required
+def admin_rename_market(market_id):
+    data = request.get_json() or {}
+    new_title = (data.get("title") or "").strip()
+    if not new_title: return jsonify({"error": "Titre requis"}), 400
+    db = load_db()
+    m = next((m for m in db["markets"] if m["id"] == market_id), None)
+    if not m: return jsonify({"error": "Marché introuvable"}), 404
+    old = m["title"]
+    m["title"] = new_title
+    _log_admin_action(db, "rename_market", f"Renommé '{old}' en '{new_title}'", market_id=market_id, market_title=new_title)
+    save_db(db)
+    broadcast_sse("market_update", m)
+    return jsonify({"ok": True, "market": m})
+
+@app.route("/api/admin/markets/<market_id>/toggle-pause", methods=["POST"])
+@admin_required
+def admin_toggle_pause(market_id):
+    data = request.get_json() or {}
+    db = load_db()
+    m = next((m for m in db["markets"] if m["id"] == market_id), None)
+    if not m: return jsonify({"error": "Marché introuvable"}), 404
+
+    if m["status"] == "open":
+        m["status"] = "paused"
+        action = "Mise en pause"
+    else:
+        m["status"] = "open"
+        action = "Réactivation"
+
+    _log_admin_action(db, "toggle_pause", f"{action} du marché '{m['title']}'", market_id=market_id, market_title=m["title"])
+    save_db(db)
+    broadcast_sse("market_update", m)
+    return jsonify({"ok": True, "market": m})
+
 @app.route("/api/admin/markets/<market_id>/resolve", methods=["POST"])
 @admin_required
 def admin_resolve_market(market_id):
-    """
-    Résolution de marché AMM (distribution des gains aux détenteurs de shares gagnantes).
-    """
     data = request.get_json() or {}
     winner_id = data.get("winnerId")
 
@@ -900,14 +1138,12 @@ def admin_resolve_market(market_id):
         m["resolvedWinner"] = winner_id
 
         if winner_id == "cancelled":
-            # Remboursement intégral de tous les paris
             for b in m.get("bets", []):
                 u = db["users"].get(b["userId"])
                 if u:
                     u["points"] += b["amount"]
                     add_tx(u, f"Remboursement annulation '{m['title']}'", b["amount"])
         else:
-            # 1 Share gagnante = 1 Point
             for b in m.get("bets", []):
                 u = db["users"].get(b["userId"])
                 if u:
@@ -922,6 +1158,47 @@ def admin_resolve_market(market_id):
         save_db(db)
         broadcast_sse("market_update", m)
         return jsonify({"ok": True})
+
+@app.route("/api/admin/markets/<market_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_market(market_id):
+    db = load_db()
+    idx = next((i for i, m in enumerate(db["markets"]) if m["id"] == market_id), None)
+    if idx is None: return jsonify({"error": "Marché introuvable"}), 404
+    m = db["markets"][idx]
+    _log_admin_action(db, "delete_market", f"Suppression du marché '{m['title']}'", market_id=market_id, market_title=m["title"])
+    db["markets"].pop(idx)
+    save_db(db)
+    return jsonify({"ok": True})
+
+@app.route("/api/admin/categories", methods=["POST"])
+@admin_required
+def admin_create_category():
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name: return jsonify({"error": "Nom requis"}), 400
+    db = load_db()
+    new_cat = {
+        "id": "cat_" + secrets.token_hex(4),
+        "name": name,
+        "order": len(db.get("categories", []))
+    }
+    db.setdefault("categories", []).append(new_cat)
+    _log_admin_action(db, "create_category", f"Création catégorie '{name}'")
+    save_db(db)
+    return jsonify({"ok": True, "category": new_cat})
+
+@app.route("/api/admin/categories/<cat_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_category(cat_id):
+    db = load_db()
+    db["categories"] = [c for c in db.get("categories", []) if c["id"] != cat_id]
+    for m in db.get("markets", []):
+        if m.get("categoryId") == cat_id:
+            m["categoryId"] = None
+    _log_admin_action(db, "delete_category", f"Suppression catégorie {cat_id}")
+    save_db(db)
+    return jsonify({"ok": True})
 
 @app.route("/api/admin/password-resets", methods=["GET"])
 @admin_required
@@ -956,6 +1233,36 @@ def admin_approve_password_reset(req_id):
 def admin_get_name_changes():
     db = load_db()
     return jsonify([r for r in db.get("name_change_requests", []) if r.get("status") == "pending"])
+
+@app.route("/api/admin/name-changes/<req_id>/approve", methods=["POST"])
+@admin_required
+def admin_approve_name_change(req_id):
+    db = load_db()
+    reqs = db.get("name_change_requests", [])
+    target = next((r for r in reqs if r["id"] == req_id), None)
+    if not target: return jsonify({"error": "Demande introuvable"}), 404
+
+    user = db["users"].get(target["userId"])
+    if user:
+        user["name"] = target["newName"]
+        add_tx(user, f"Changement de pseudo : {target['newName']}", 0)
+
+    target["status"] = "approved"
+    _log_admin_action(db, "approve_name_change", f"Nouveau pseudo '{target['newName']}' approuvé pour {target['oldName']}")
+    save_db(db)
+    return jsonify({"ok": True})
+
+@app.route("/api/admin/name-changes/<req_id>/reject", methods=["POST"])
+@admin_required
+def admin_reject_name_change(req_id):
+    db = load_db()
+    reqs = db.get("name_change_requests", [])
+    target = next((r for r in reqs if r["id"] == req_id), None)
+    if not target: return jsonify({"error": "Demande introuvable"}), 404
+    target["status"] = "rejected"
+    _log_admin_action(db, "reject_name_change", f"Rejet du pseudo '{target['newName']}' pour {target['oldName']}")
+    save_db(db)
+    return jsonify({"ok": True})
 
 @app.route("/api/profile/request-name-change", methods=["POST"])
 @login_required
@@ -1003,16 +1310,14 @@ def admin_activity_log():
 @app.route("/api/admin/export/csv")
 @admin_required
 def admin_export_csv():
-    """Génère un export CSV des membres et transactions."""
     db = load_db()
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # 1. Utilisateurs
     writer.writerow(["=== UTILISATEURS ==="])
-    writer.writerow(["ID", "Nom", "Pseudo", "Email", "Bucque", "Num's", "Prom's", "Solde Points", "Statut", "Role"])
+    writer.writerow(["ID", "Nom", "Num's", "Email", "Bucque", "Prom's", "Solde Points", "Statut", "Role"])
     for u in db["users"].values():
-        writer.writerow([u["id"], u["name"], u["username"], u.get("email", ""), u.get("buque", ""), u.get("nums", ""), u.get("proms", ""), u.get("points", 0), u.get("status", ""), u.get("role", "")])
+        writer.writerow([u["id"], u["name"], u.get("nums", ""), u.get("email", ""), u.get("buque", ""), u.get("proms", ""), u.get("points", 0), u.get("status", ""), u.get("role", "")])
 
     writer.writerow([])
     writer.writerow(["=== MARCHES ==="])
@@ -1031,13 +1336,13 @@ def admin_export_csv():
 def get_leaderboard():
     db = load_db()
     active = [u for u in db["users"].values() if u.get("status") == "active"]
-    ranked = sorted(active, key=lambda u: max(0, int(u.get("points", 0))), reverse=True)[:20]
-    return jsonify([{"id": u["id"], "name": u["name"], "points": u.get("points", 0)} for u in ranked])
+    ranked = sorted(active, key=lambda u: max(0, int(u.get("points", 0))), reverse=True)[:25]
+    return jsonify([{"id": u["id"], "name": u["name"], "nums": u.get("nums", ""), "points": u.get("points", 0)} for u in ranked])
 
 # ──────────────────────────────────────────────────────────────────────────────
 # LANCEMENT SERVEUR
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"[OK] PolyBoquette 2.0 demarre sur http://localhost:{port}")
+    print(f"[OK] PolyBoquette demarre sur http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)

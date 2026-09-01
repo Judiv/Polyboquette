@@ -36,22 +36,18 @@ export function renderProfile() {
                         </div>
                         <div>
                             <h2 style="font-size:1.3rem; margin:0; font-weight:800;">${esc(user.name)}</h2>
-                            <div style="color:var(--text-secondary); font-size:0.9rem;">@${esc(user.username)} ${user.role === 'admin' ? '<span class="admin-badge">ADMIN</span>' : ''}</div>
+                            <div style="color:var(--text-secondary); font-size:0.85rem;">Num's : <b>${esc(user.nums || user.username)}</b> ${user.role === 'admin' ? '<span class="admin-badge">ADMIN</span>' : ''}</div>
                         </div>
                     </div>
 
                     <div class="profile-details-list">
                         <div class="profile-detail-row">
-                            <span class="detail-label">Bucque</span>
-                            <span class="detail-val">${esc(user.buque) || '-'}</span>
+                            <span class="detail-label">Prénom & Nom</span>
+                            <span class="detail-val">${esc(user.name)}</span>
                         </div>
                         <div class="profile-detail-row">
                             <span class="detail-label">Num's</span>
-                            <span class="detail-val">${esc(user.nums) || '-'}</span>
-                        </div>
-                        <div class="profile-detail-row">
-                            <span class="detail-label">Prom's</span>
-                            <span class="detail-val">${esc(user.proms) || '-'}</span>
+                            <span class="detail-val">${esc(user.nums || user.username)}</span>
                         </div>
                         <div class="profile-detail-row">
                             <span class="detail-label">E-mail</span>
@@ -72,7 +68,7 @@ export function renderProfile() {
                             <i class="fa-solid fa-envelope"></i> Modifier mon adresse e-mail
                         </button>
                         <button class="btn-outline" id="profileRequestNameBtn">
-                            <i class="fa-solid fa-signature"></i> Demander un changement de pseudo
+                            <i class="fa-solid fa-signature"></i> Demander un changement de nom
                         </button>
                         <button class="btn-outline" id="profileLogoutBtn" style="color:var(--no-color); border-color:rgba(239, 68, 68, 0.3); margin-top:0.5rem;">
                             <i class="fa-solid fa-right-from-bracket"></i> Se déconnecter
@@ -83,26 +79,30 @@ export function renderProfile() {
                 <!-- Carte Badges & Succès Déblocables -->
                 <div class="profile-card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem;">
-                        <h2 style="font-size:1.2rem; font-weight:700; margin:0;">
-                            <i class="fa-solid fa-trophy" style="color:#eab308;"></i> Badges & Succès
-                        </h2>
-                        <span style="font-weight:700; font-size:0.9rem; color:var(--text-secondary);">
-                            ${unlockedCount} / ${badges.length} débloqués
+                        <div>
+                            <h2 style="font-size:1.2rem; font-weight:700; margin:0;">
+                                <i class="fa-solid fa-trophy" style="color:#eab308;"></i> Badges & Succès
+                            </h2>
+                            <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:0.2rem;">Relevez des défis et découvrez les badges secrets.</p>
+                        </div>
+                        <span class="badge-counter">
+                            ${unlockedCount} / ${badges.length}
                         </span>
                     </div>
 
                     <div class="badges-grid">
                         ${badges.map(b => `
                             <div class="badge-item ${b.isUnlocked ? 'badge-unlocked' : 'badge-locked'}">
-                                <div class="badge-icon-box" style="background:${b.isUnlocked ? b.color + '20' : 'var(--bg-secondary)'}; color:${b.isUnlocked ? b.color : 'var(--text-secondary)'};">
-                                    <i class="fa-solid ${esc(b.icon)}"></i>
+                                <div class="badge-icon-box" style="background:${b.isUnlocked ? b.color + '25' : 'var(--bg-secondary)'}; color:${b.isUnlocked ? b.color : 'var(--text-secondary)'};">
+                                    <i class="fa-solid ${b.isUnlocked ? esc(b.icon) : (b.isSecret ? 'fa-lock' : esc(b.icon))}"></i>
                                 </div>
                                 <div style="flex:1;">
                                     <div class="badge-title">
-                                        ${esc(b.name)}
+                                        ${esc(b.displayName)}
                                         ${b.isUnlocked ? '<i class="fa-solid fa-circle-check" style="color:#22c55e; font-size:0.8rem; margin-left:0.25rem;"></i>' : ''}
                                     </div>
-                                    <div class="badge-desc">${esc(b.desc)}</div>
+                                    <div class="badge-desc">${esc(b.displayDesc)}</div>
+                                    <div class="badge-difficulty difficulty-${b.tier}">${b.difficulty}</div>
                                 </div>
                             </div>
                         `).join('')}
@@ -114,20 +114,16 @@ export function renderProfile() {
 }
 
 export function attachProfileEvents() {
-    // 1. Déconnexion
     const logoutBtn = document.getElementById('profileLogoutBtn');
     if (logoutBtn) {
         logoutBtn.onclick = async () => {
-            try {
-                await api.post('/api/auth/logout');
-            } catch (e) {}
+            try { await api.post('/api/auth/logout'); } catch (e) {}
             state.setUser(null);
             toast.info("Déconnexion réussie");
             router.navigate('/');
         };
     }
 
-    // 2. Changer mot de passe
     const passBtn = document.getElementById('profileChangePassBtn');
     if (passBtn) {
         passBtn.onclick = () => {
@@ -149,23 +145,14 @@ export function attachProfileEvents() {
                 onConfirm: async () => {
                     const oldPassword = document.getElementById('oldPassInput').value;
                     const newPassword = document.getElementById('newPassInput').value;
-                    if (!oldPassword || !newPassword) {
-                        toast.error("Veuillez remplir tous les champs");
-                        throw new Error("Validation");
-                    }
-                    try {
-                        await api.post('/api/auth/change-password', { oldPassword, newPassword });
-                        toast.success("Mot de passe mis à jour avec succès");
-                    } catch (err) {
-                        toast.error(err.message || "Erreur de changement");
-                        throw err;
-                    }
+                    if (!oldPassword || !newPassword) { toast.error("Tous les champs sont requis"); throw new Error(); }
+                    await api.post('/api/auth/change-password', { oldPassword, newPassword });
+                    toast.success("Mot de passe mis à jour");
                 }
             });
         };
     }
 
-    // 3. Changer E-mail
     const emailBtn = document.getElementById('profileChangeEmailBtn');
     if (emailBtn) {
         emailBtn.onclick = () => {
@@ -187,47 +174,30 @@ export function attachProfileEvents() {
                 onConfirm: async () => {
                     const newEmail = document.getElementById('newEmailInput').value.trim();
                     const password = document.getElementById('confirmPassForEmail').value;
-                    try {
-                        const res = await api.post('/api/auth/change-email', { newEmail, password });
-                        state.setUser(res.user);
-                        toast.success("Adresse e-mail enregistrée");
-                        router.renderCurrentView();
-                    } catch (err) {
-                        toast.error(err.message || "Erreur de mise à jour");
-                        throw err;
-                    }
+                    const res = await api.post('/api/auth/change-email', { newEmail, password });
+                    state.setUser(res.user);
+                    toast.success("Adresse e-mail enregistrée");
+                    router.renderCurrentView();
                 }
             });
         };
     }
 
-    // 4. Demander changement de pseudonyme
     const nameBtn = document.getElementById('profileRequestNameBtn');
     if (nameBtn) {
         nameBtn.onclick = () => {
             modal.show({
-                title: "Demande de Changement de Pseudonyme",
+                title: "Demande de Changement de Nom",
                 content: `
-                    <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.75rem;">
-                        Votre demande sera soumise à la validation d'un administrateur.
-                    </p>
-                    <label style="display:block; font-size:0.85rem; margin-bottom:0.25rem;">Nouveau Nom / Bucque souhaité</label>
-                    <input type="text" id="newNameInput" class="input-full" placeholder="Ex: Jean Dupont (F'OÜ)">
+                    <label style="display:block; font-size:0.85rem; margin-bottom:0.25rem;">Nouveau Prénom et Nom souhaités</label>
+                    <input type="text" id="newNameInput" class="input-full" placeholder="Ex: Jean Dupont">
                 `,
-                confirmText: "Envoyer la demande",
+                confirmText: "Transmettre la demande",
                 onConfirm: async () => {
                     const newName = document.getElementById('newNameInput').value.trim();
-                    if (!newName) {
-                        toast.error("Veuillez saisir un nom");
-                        throw new Error("Validation");
-                    }
-                    try {
-                        await api.post('/api/profile/request-name-change', { newName });
-                        toast.success("Demande transmise à l'administration");
-                    } catch (err) {
-                        toast.error(err.message || "Erreur de demande");
-                        throw err;
-                    }
+                    if (!newName) { toast.error("Nom requis"); throw new Error(); }
+                    await api.post('/api/profile/request-name-change', { newName });
+                    toast.success("Demande transmise à l'administrateur");
                 }
             });
         };

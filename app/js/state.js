@@ -3,9 +3,10 @@
  */
 
 export const state = {
-    version: 8,
+    version: 9,
     currentUser: null,
     theme: localStorage.getItem('theme') || 'dark',
+    displayMode: localStorage.getItem('displayMode') || 'compact', // 'compact' | 'detailed'
 
     // Data
     markets: [],
@@ -13,6 +14,7 @@ export const state = {
     proposals: [],
     leaderboard: [],
     pendingUsers: [],
+    allUsers: [],
     nameChangeRequests: [],
     passwordResetRequests: [],
 
@@ -26,7 +28,9 @@ export const state = {
     chartHidden: localStorage.getItem('chartHidden') === '1',
 
     // Admin State
-    adminTab: 'metrics', // 'metrics' | 'proposals_users' | 'markets' | 'logs'
+    adminTab: 'members', // 'members' | 'markets' | 'validations' | 'categories' | 'logs'
+    adminSearchUser: '',
+    adminFilterStatus: 'all',
     adminLogsFilter: 'all',
     collapsedCategories: JSON.parse(localStorage.getItem('collapsedCategories') || '{}'),
 
@@ -36,10 +40,9 @@ export const state = {
         marketId: null,
         optId: null,
         amount: 50,
-        mode: 'buy' // 'buy' | 'sell'
+        mode: 'buy'
     },
 
-    // Listeners for reactivity
     listeners: new Set(),
 
     subscribe(fn) {
@@ -57,6 +60,12 @@ export const state = {
         this.theme = newTheme;
         document.documentElement.setAttribute('data-theme', newTheme);
         localStorage.setItem('theme', newTheme);
+        this.notify();
+    },
+
+    setDisplayMode(mode) {
+        this.displayMode = mode;
+        localStorage.setItem('displayMode', mode);
         this.notify();
     },
 
