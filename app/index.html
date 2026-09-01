@@ -3,42 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PolyBoquette - Marchés Prédictifs</title>
+    <title>PolyBoquette - Marchés Prédictifs Gadz'arts</title>
+    
+    <!-- PWA Manifest & Meta -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#800000">
+    <link rel="icon" type="image/png" href="logo.png">
     
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     
-    <!-- FontAwesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- FontAwesome 6 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     
     <!-- Custom CSS -->
     <link rel="stylesheet" href="./css/style.css">
     
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1" defer></script>
-    
-    <!-- SortableJS -->
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js" defer></script>
 </head>
 <body>
     <!-- Navbar -->
     <nav class="navbar">
-        <a href="#" class="brand" onclick="app.navigate('dashboard')">
+        <a href="#/" class="brand">
             <img src="logo.png" alt="Logo PB">
             PolyBoquette
         </a>
         
         <div class="nav-actions">
-            <button class="btn-icon" id="themeToggle" onclick="app.toggleTheme()" title="Changer le thème">
-                <i class="fa-regular fa-moon"></i>
+            <button class="btn-icon" id="themeToggle" title="Changer le thème">
+                <i class="fa-solid fa-moon"></i>
             </button>
             
             <div class="user-pill hidden" id="userPill">
-                <i class="fa-solid fa-circle-user" style="color: var(--text-secondary)"></i>
+                <i class="fa-solid fa-circle-user" style="color: var(--accent-color)"></i>
                 <span id="userName">Invité</span>
                 <span class="points" id="userPoints">
                      <i class="fa-solid fa-coins"></i> 0
@@ -46,10 +46,11 @@
             </div>
             
             <div id="authActions">
-                <button class="btn-outline" onclick="app.navigate('login')">Connexion</button>
-                <button class="btn-primary" onclick="app.navigate('register')">S'inscrire</button>
+                <a href="#/login" class="btn-outline">Connexion</a>
+                <a href="#/register" class="btn-primary">S'inscrire</a>
             </div>
-            <button class="btn-outline hidden" id="logoutBtn" onclick="app.logout()">
+
+            <button class="btn-outline hidden" id="logoutBtn" title="Se déconnecter">
                 <i class="fa-solid fa-right-from-bracket"></i>
             </button>
         </div>
@@ -57,14 +58,15 @@
 
     <!-- Main Container -->
     <main class="container" id="app-container">
-        <!-- Vues gérées par JS -->
+        <!-- Vues gérées par le Routeur JS -->
     </main>
 
     <!-- Global UI Layers -->
     <div id="toast-container" class="toast-container"></div>
     <div id="modal-container"></div>
+    <div id="betSlipContainer" class="bet-slip-container"></div>
 
-    <!-- Application Script -->
-    <script src="./js/app.js" defer></script>
+    <!-- Application Script ES6 Modules -->
+    <script type="module" src="./js/main.js"></script>
 </body>
 </html>
