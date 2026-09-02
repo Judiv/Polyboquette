@@ -43,10 +43,10 @@ DB_PATH    = os.path.join(DATA_DIR, "db.json")
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
-app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+app.secret_key = os.environ.get("SECRET_KEY", "polyboquette_permanent_secret_key_prod_2026_gadz_arts_sec")
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SECURE"] = os.environ.get("FLASK_ENV") == "production"
+app.config["PERMANENT_SESSION_LIFETIME"] = 7776000  # 90 jours en secondes
 
 @app.after_request
 def add_security_headers(response):
@@ -228,7 +228,9 @@ def _migrate(db):
     for u in db["users"].values():
         if "transactions" not in u: u["transactions"] = []
         if "pinnedMarkets" not in u: u["pinnedMarkets"] = []
-        if "session_token" not in u: u["session_token"] = None
+        if "session_tokens" not in u:
+            u["session_tokens"] = [u["session_token"]] if u.get("session_token") else []
+        u.pop("session_token", None)
         if "email" not in u: u["email"] = ""
         # Si nums vide, copier username
         if not u.get("nums"):
@@ -292,14 +294,10 @@ def _ensure_admin(db):
         "buque": "", "proms": "",
         "transactions": [],
         "pinnedMarkets": [],
-        "session_token": None
+        "session_tokens": []
     }
 
 def load_db():
-    global _cached_db
-    if _cached_db is not None:
-        return _cached_db
-
     if USE_PG and _pg_pool:
         conn = None
         try:
@@ -311,12 +309,10 @@ def load_db():
             if row:
                 db = _migrate(json.loads(row[0]))
                 _ensure_admin(db)
-                _cached_db = db
                 return db
             db = copy.deepcopy(DEFAULT_DB)
             _ensure_admin(db)
             save_db(db)
-            _cached_db = db
             return db
         except Exception as e:
             print(f"[PG] Erreur load_db: {e}")
@@ -328,19 +324,14 @@ def load_db():
         if not os.path.exists(DB_PATH):
             db = copy.deepcopy(DEFAULT_DB)
             save_db(db)
-            _cached_db = db
             return db
         with open(DB_PATH, "r", encoding="utf-8") as f:
             db = json.load(f)
         db = _migrate(db)
         _ensure_admin(db)
-        _cached_db = db
         return db
 
 def save_db(db):
-    global _cached_db
-    _cached_db = db
-
     if USE_PG and _pg_pool:
         conn = None
         try:
@@ -392,8 +383,9 @@ def login_required(f):
         if not user or user.get("status") != "active":
             session.clear()
             return jsonify({"error": "Session invalide ou compte inactif"}), 401
-        stored_token = user.get("session_token")
-        if stored_token and session.get("token") != stored_token:
+        
+        stored_tokens = user.get("session_tokens", [])
+        if stored_tokens and session.get("token") not in stored_tokens:
             session.clear()
             return jsonify({"error": "Session expirée — veuillez vous reconnecter"}), 401
         return f(*args, **kwargs)
@@ -408,8 +400,9 @@ def admin_required(f):
         user = db["users"].get(session["user_id"])
         if not user or user.get("role") != "admin":
             return jsonify({"error": "Accès réservé aux administrateurs"}), 403
-        stored_token = user.get("session_token")
-        if stored_token and session.get("token") != stored_token:
+        
+        stored_tokens = user.get("session_tokens", [])
+        if stored_tokens and session.get("token") not in stored_tokens:
             session.clear()
             return jsonify({"error": "Session expirée"}), 401
         return f(*args, **kwargs)
@@ -422,6 +415,7 @@ def safe_user(user):
     u = dict(user)
     u.pop("password", None)
     u.pop("session_token", None)
+    u.pop("session_tokens", None)
     return u
 
 def add_tx(user, desc, amount):
@@ -521,7 +515,8 @@ def auth_login():
         return jsonify({"error": "Compte suspendu par l'administration"}), 403
 
     token = secrets.token_hex(32)
-    user["session_token"] = token
+    user.setdefault("session_tokens", []).append(token)
+    user["session_tokens"] = user["session_tokens"][-10:]  # Garder jusqu'à 10 appareils connectés simultanément
     save_db(db)
 
     session.permanent = True
@@ -531,6 +526,14 @@ def auth_login():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
+    db = load_db()
+    if "user_id" in session:
+        user = db["users"].get(session["user_id"])
+        if user and "session_tokens" in user:
+            cur_token = session.get("token")
+            if cur_token in user["session_tokens"]:
+                user["session_tokens"].remove(cur_token)
+                save_db(db)
     session.clear()
     return jsonify({"ok": True})
 
@@ -579,7 +582,7 @@ def auth_register():
         "proms": data.get("proms", ""),
         "transactions": [],
         "pinnedMarkets": [],
-        "session_token": None
+        "session_tokens": []
     }
     save_db(db)
     return jsonify({"ok": True}), 201
@@ -617,7 +620,7 @@ def auth_change_password():
 
     user["password"] = generate_password_hash(new_pass)
     new_token = secrets.token_hex(32)
-    user["session_token"] = new_token
+    user["session_tokens"] = [new_token]
     session["token"] = new_token
     save_db(db)
     return jsonify({"ok": True})
@@ -960,7 +963,7 @@ def admin_toggle_user_status(user_id):
     new_status = "frozen" if current == "active" else "active"
     user["status"] = new_status
     if new_status == "frozen":
-        user["session_token"] = secrets.token_hex(32)
+        user["session_tokens"] = []
 
     _log_admin_action(db, "toggle_status", f"Compte de {user['name']} passé à l'état '{new_status}'")
     save_db(db)
@@ -990,10 +993,10 @@ def admin_kick_user(user_id):
     db = load_db()
     user = db["users"].get(user_id)
     if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
-    user["session_token"] = secrets.token_hex(32)
+    user["session_tokens"] = []
     _log_admin_action(db, "kick_user", f"Déconnexion forcée de {user['name']}")
     save_db(db)
-    return jsonify({"ok": True, "message": f"{user['name']} a été déconnecté"})
+    return jsonify({"ok": True, "message": f"{user['name']} a été déconnecté de tous ses appareils"})
 
 @app.route("/api/admin/users/<user_id>", methods=["DELETE"])
 @admin_required
@@ -1290,7 +1293,7 @@ def admin_approve_password_reset(req_id):
     user = db["users"].get(target_req["userId"])
     if user:
         user["password"] = generate_password_hash(new_pass)
-        user["session_token"] = secrets.token_hex(32)
+        user["session_tokens"] = []
 
     db["password_reset_requests"] = [r for r in reqs if r["id"] != req_id]
     _log_admin_action(db, "password_reset", f"Réinitialisation mot de passe pour {target_req['userName']}")
