@@ -172,7 +172,10 @@ export function renderDashboard() {
         const sortedOpts = [...m.options].sort((a, b) => (probs[b.id] || 0) - (probs[a.id] || 0));
         const isPinned = user && user.pinnedMarkets && user.pinnedMarkets.includes(m.id);
         const remaining = getRemainingTime(m.pauseAt);
-        const isOpen = m.status === 'open' && (!remaining || !remaining.isExpired);
+        const isPaused = m.status === 'paused';
+        const isResolved = m.status === 'resolved';
+        const isExpired = remaining && remaining.isExpired;
+        const isOpen = m.status === 'open' && !isExpired;
 
         const maxOptsToShow = isCompact ? 3 : sortedOpts.length;
         const visibleOpts = sortedOpts.slice(0, maxOptsToShow);
@@ -185,7 +188,8 @@ export function renderDashboard() {
                         <span style="font-weight:700; color:var(--accent-color);"><i class="fa-solid fa-gear"></i> Modération</span>
                         <div style="display:flex; gap:0.25rem;">
                             <button class="btn-icon card-admin-rename" data-id="${m.id}" data-title="${esc(m.title)}" title="Renommer" style="width:24px; height:24px; font-size:0.7rem;"><i class="fa-solid fa-pen"></i></button>
-                            <button class="btn-icon card-admin-pause" data-id="${m.id}" title="Pause/Play" style="width:24px; height:24px; font-size:0.7rem;"><i class="fa-solid fa-pause"></i></button>
+                            <button class="btn-icon card-admin-date" data-id="${m.id}" data-date="${esc(m.pauseAt || '')}" title="Date de gel" style="width:24px; height:24px; font-size:0.7rem;"><i class="fa-regular fa-clock"></i></button>
+                            <button class="btn-icon card-admin-pause" data-id="${m.id}" title="${isPaused ? 'Réactiver' : 'Mettre en pause'}" style="width:24px; height:24px; font-size:0.7rem; color:${isPaused ? 'var(--yes-color)' : '#f59e0b'};"><i class="fa-solid ${isPaused ? 'fa-play' : 'fa-pause'}"></i></button>
                             <button class="btn-icon card-admin-delete" data-id="${m.id}" title="Supprimer" style="width:24px; height:24px; font-size:0.7rem; color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
                         </div>
                     </div>
@@ -199,11 +203,13 @@ export function renderDashboard() {
                             <div class="market-card-meta">
                                 <span><i class="fa-solid fa-chart-simple"></i> ${formatPoints(m.volume)} pts</span>
                                 <span><i class="fa-solid fa-comments"></i> ${(m.comments || []).length}</span>
+                                ${isPaused ? `<span class="status-badge status-paused"><i class="fa-solid fa-pause"></i> En Pause</span>` : ''}
+                                ${isResolved ? `<span class="status-badge status-resolved">Résolu</span>` : ''}
                                 ${remaining && !remaining.isExpired ? `
                                     <span class="freeze-pill"><i class="fa-regular fa-clock"></i> ${remaining.label}</span>
                                 ` : ''}
-                                ${!isOpen ? `
-                                    <span class="closed-pill">${m.status === 'resolved' ? 'Résolu' : 'Fermé'}</span>
+                                ${isExpired && !isResolved ? `
+                                    <span class="closed-pill"><i class="fa-solid fa-lock"></i> Gelé</span>
                                 ` : ''}
                             </div>
                         </div>
@@ -219,7 +225,7 @@ export function renderDashboard() {
                         const prob = probs[opt.id] || 50;
                         const decOdds = AMM.probToDecimalOdds(prob);
                         return `
-                            <div class="option-row" data-market-id="${m.id}" data-opt-id="${opt.id}">
+                            <div class="option-row ${!isOpen ? 'option-row-disabled' : ''}" data-market-id="${m.id}" data-opt-id="${opt.id}" data-is-open="${isOpen ? '1' : '0'}">
                                 <div class="option-info">
                                     <span class="option-dot" style="background:${opt.color || '#22c55e'}"></span>
                                     <span class="option-name">${esc(opt.label)}</span>
@@ -319,7 +325,7 @@ export function attachDashboardEvents() {
 
     document.querySelectorAll('.market-card').forEach(card => {
         card.onclick = (e) => {
-            if (e.target.closest('.pin-btn') || e.target.closest('.option-row') || e.target.closest('.card-admin-rename') || e.target.closest('.card-admin-pause') || e.target.closest('.card-admin-delete')) return;
+            if (e.target.closest('.pin-btn') || e.target.closest('.option-row') || e.target.closest('.card-admin-rename') || e.target.closest('.card-admin-date') || e.target.closest('.card-admin-pause') || e.target.closest('.card-admin-delete')) return;
             const id = card.dataset.marketId;
             router.navigate(`/market/${id}`);
         };
@@ -328,6 +334,10 @@ export function attachDashboardEvents() {
     document.querySelectorAll('.option-row').forEach(row => {
         row.onclick = (e) => {
             e.stopPropagation();
+            const isOpen = row.dataset.isOpen === '1';
+            if (!isOpen) {
+                return toast.info("Ce marché est actuellement suspendu ou clôturé.");
+            }
             const marketId = row.dataset.marketId;
             const optId = row.dataset.optId;
             betSlip.open(marketId, optId, 50);
@@ -371,13 +381,65 @@ export function attachDashboardEvents() {
         };
     });
 
+    document.querySelectorAll('.card-admin-date').forEach(btn => {
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            const mId = btn.dataset.id;
+            const rawDate = btn.dataset.date || '';
+            const curDate = rawDate ? rawDate.substring(0, 16) : '';
+
+            modal.show({
+                title: "Définir la date de gel",
+                content: `
+                    <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                        <p style="font-size:0.85rem; color:var(--text-secondary); margin:0;">
+                            Indiquez la date et l'heure précises de gel automatique.
+                        </p>
+                        <input type="datetime-local" id="dashPauseDateInput" class="input-full" value="${curDate}">
+                        ${rawDate ? `
+                            <button class="btn-outline" id="dashRemovePauseDateBtn" style="color:#ef4444; border-color:rgba(239,68,68,0.3); padding:0.35rem; font-size:0.8rem;">
+                                <i class="fa-solid fa-trash"></i> Supprimer la date de gel
+                            </button>
+                        ` : ''}
+                    </div>
+                `,
+                confirmText: "Enregistrer",
+                onConfirm: async () => {
+                    const val = document.getElementById('dashPauseDateInput').value;
+                    const pauseAt = val ? new Date(val).toISOString() : null;
+                    await api.post(`/api/admin/markets/${mId}/pause-date`, { pauseAt });
+                    toast.success("Date de gel mise à jour");
+                    await router.fetchGlobalData();
+                    router.renderCurrentView();
+                }
+            });
+
+            setTimeout(() => {
+                const removeBtn = document.getElementById('dashRemovePauseDateBtn');
+                if (removeBtn) {
+                    removeBtn.onclick = async () => {
+                        await api.post(`/api/admin/markets/${mId}/pause-date`, { pauseAt: null });
+                        toast.info("Date de gel supprimée");
+                        modal.close();
+                        await router.fetchGlobalData();
+                        router.renderCurrentView();
+                    };
+                }
+            }, 50);
+        };
+    });
+
     document.querySelectorAll('.card-admin-pause').forEach(btn => {
         btn.onclick = async (e) => {
             e.stopPropagation();
-            await api.post(`/api/admin/markets/${btn.dataset.id}/toggle-pause`);
-            toast.info("Statut modifié");
-            await router.fetchGlobalData();
-            router.renderCurrentView();
+            try {
+                const res = await api.post(`/api/admin/markets/${btn.dataset.id}/toggle-pause`);
+                toast.info(res.status === 'paused' ? "Marché mis en pause" : "Marché réactivé");
+                await router.fetchGlobalData();
+                router.renderCurrentView();
+            } catch (err) {
+                toast.error("Erreur de modification du statut");
+            }
         };
     });
 

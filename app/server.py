@@ -1083,7 +1083,7 @@ def admin_toggle_pause(market_id):
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
     if not m: return jsonify({"error": "Marché introuvable"}), 404
 
-    if m["status"] == "open":
+    if m.get("status") == "open":
         m["status"] = "paused"
         action = "Mise en pause"
     else:
@@ -1092,8 +1092,22 @@ def admin_toggle_pause(market_id):
 
     _log_admin_action(db, "toggle_pause", f"{action} du marché '{m['title']}'", market_id=market_id, market_title=m["title"])
     save_db(db)
-    broadcast_sse("market_update", m)
-    return jsonify({"ok": True, "market": m})
+    return jsonify({"ok": True, "market": m, "status": m["status"]})
+
+@app.route("/api/admin/markets/<market_id>/pause-date", methods=["POST"])
+@admin_required
+def admin_set_market_pause_date(market_id):
+    data = request.get_json() or {}
+    pause_at = data.get("pauseAt")
+    db = load_db()
+    m = next((m for m in db["markets"] if m["id"] == market_id), None)
+    if not m: return jsonify({"error": "Marché introuvable"}), 404
+
+    m["pauseAt"] = pause_at
+    label = f"Gel fixé au {pause_at}" if pause_at else "Date de gel supprimée"
+    _log_admin_action(db, "update_pause_date", f"Date de gel de '{m['title']}' modifiée : {label}", market_id=market_id)
+    save_db(db)
+    return jsonify({"ok": True, "market": m, "pauseAt": pause_at})
 
 @app.route("/api/admin/markets/<market_id>/resolve", methods=["POST"])
 @admin_required

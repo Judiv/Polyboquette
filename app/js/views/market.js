@@ -39,7 +39,11 @@ export function renderMarket(marketId) {
 
     const probs = AMM.getProbabilities(market);
     const remaining = getRemainingTime(market.pauseAt);
-    const isOpen = market.status === 'open' && (!remaining || !remaining.isExpired);
+    const isPaused = market.status === 'paused';
+    const isResolved = market.status === 'resolved';
+    const isExpired = remaining && remaining.isExpired;
+    const isOpen = market.status === 'open' && !isExpired;
+
     const isPinned = user && user.pinnedMarkets && user.pinnedMarkets.includes(market.id);
     const myBets = (market.bets || []).filter(b => String(b.userId) === String(user.id) || String(b.userId) === String(user.username) || String(b.userId) === String(user.nums));
     const comments = market.comments || [];
@@ -75,8 +79,11 @@ export function renderMarket(marketId) {
                         <button class="btn-outline admin-direct-cat" data-id="${market.id}" style="padding:0.25rem 0.6rem; font-size:0.75rem;">
                             <i class="fa-solid fa-tags"></i> Catégorie
                         </button>
-                        <button class="btn-outline admin-direct-pause" data-id="${market.id}" style="padding:0.25rem 0.6rem; font-size:0.75rem;">
-                            <i class="fa-solid ${market.status === 'open' ? 'fa-pause' : 'fa-play'}"></i> ${market.status === 'open' ? 'Pause' : 'Activer'}
+                        <button class="btn-outline admin-direct-pause-date" data-id="${market.id}" data-date="${esc(market.pauseAt || '')}" style="padding:0.25rem 0.6rem; font-size:0.75rem;">
+                            <i class="fa-regular fa-clock"></i> Date de gel
+                        </button>
+                        <button class="btn-outline admin-direct-pause" data-id="${market.id}" style="padding:0.25rem 0.6rem; font-size:0.75rem; color:${isPaused ? 'var(--yes-color)' : '#f59e0b'};">
+                            <i class="fa-solid ${isPaused ? 'fa-play' : 'fa-pause'}"></i> ${isPaused ? 'Réactiver' : 'Mettre en pause'}
                         </button>
                         <button class="btn-primary admin-direct-resolve" data-id="${market.id}" style="padding:0.25rem 0.6rem; font-size:0.75rem;">
                             <i class="fa-solid fa-gavel"></i> Clôturer
@@ -94,17 +101,19 @@ export function renderMarket(marketId) {
                     <img src="${esc(market.image)}" alt="Image" style="width:64px; height:64px; border-radius:var(--radius-sm); object-fit:cover;" onerror="this.src='logo.png'">
                     <div style="flex:1;">
                         <h1 style="font-size:1.35rem; font-weight:800; line-height:1.3; margin-bottom:0.4rem;">${esc(market.title)}</h1>
-                        <div style="display:flex; gap:0.75rem; font-size:0.8rem; color:var(--text-secondary); flex-wrap:wrap;">
+                        <div style="display:flex; gap:0.75rem; font-size:0.8rem; color:var(--text-secondary); flex-wrap:wrap; align-items:center;">
                             <span><i class="fa-solid fa-chart-simple"></i> Volume : <b>${formatPoints(market.volume)}</b> pts</span>
                             <span><i class="fa-solid fa-users"></i> ${market.bets ? market.bets.length : 0} positions</span>
                             <span><i class="fa-solid fa-comments"></i> ${comments.length} avis</span>
+                            ${isPaused ? `<span class="status-badge status-paused"><i class="fa-solid fa-pause"></i> En Pause</span>` : ''}
+                            ${isResolved ? `<span class="status-badge status-resolved">Résolu</span>` : ''}
                             ${remaining && !remaining.isExpired ? `<span class="freeze-pill"><i class="fa-regular fa-clock"></i> ${remaining.label}</span>` : ''}
-                            ${!isOpen ? `<span class="closed-pill">${market.status === 'resolved' ? 'Résolu' : 'Fermé'}</span>` : ''}
+                            ${isExpired && !isResolved ? `<span class="closed-pill"><i class="fa-solid fa-lock"></i> Gelé</span>` : ''}
                         </div>
                     </div>
                 </div>
 
-                <!-- Boutons d'Action / Options de Pari -->
+                <!-- Options de Pari -->
                 <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:1.25rem;">
                     ${market.options.map(opt => {
                         const prob = probs[opt.id] || 50;
@@ -134,7 +143,11 @@ export function renderMarket(marketId) {
                                     <button class="btn-primary btn-block place-bet-btn" data-market-id="${market.id}" data-opt-id="${opt.id}" style="padding:0.65rem; font-size:0.85rem;">
                                         + Parier sur "${esc(opt.label)}"
                                     </button>
-                                ` : ''}
+                                ` : `
+                                    <button class="btn-outline btn-block" disabled style="opacity:0.6; cursor:not-allowed; padding:0.65rem; font-size:0.85rem;">
+                                        <i class="fa-solid fa-lock"></i> ${isPaused ? 'Pari suspendu (En pause)' : (isResolved ? 'Marché clôturé' : 'Pari gelé')}
+                                    </button>
+                                `}
                             </div>
                         `;
                     }).join('')}
@@ -369,13 +382,67 @@ function bindAdminInlineActions(market) {
         };
     }
 
+    // Date de gel automatique
+    const pauseDateBtn = document.querySelector('.admin-direct-pause-date');
+    if (pauseDateBtn) {
+        pauseDateBtn.onclick = () => {
+            const curDate = market.pauseAt ? market.pauseAt.substring(0, 16) : '';
+            modal.show({
+                title: `Date de gel : "${esc(market.title)}"`,
+                content: `
+                    <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                        <p style="font-size:0.85rem; color:var(--text-secondary); margin:0;">
+                            Définissez la date et l'heure précises auxquelles le marché sera automatiquement gelé.
+                        </p>
+                        <div>
+                            <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.25rem;">Date et Heure de gel</label>
+                            <input type="datetime-local" id="marketPauseAtInput" class="input-full" value="${curDate}">
+                        </div>
+                        ${market.pauseAt ? `
+                            <button class="btn-outline" id="removePauseDateBtn" style="color:#ef4444; border-color:rgba(239,68,68,0.3); padding:0.35rem 0.6rem; font-size:0.8rem;">
+                                <i class="fa-solid fa-trash"></i> Supprimer la date de gel
+                            </button>
+                        ` : ''}
+                    </div>
+                `,
+                confirmText: "Enregistrer la date",
+                onConfirm: async () => {
+                    const val = document.getElementById('marketPauseAtInput').value;
+                    const pauseAt = val ? new Date(val).toISOString() : null;
+                    await api.post(`/api/admin/markets/${market.id}/pause-date`, { pauseAt });
+                    toast.success("Date de gel mise à jour !");
+                    await router.fetchGlobalData();
+                    router.renderCurrentView();
+                }
+            });
+
+            // Supprimer la date de gel directement
+            setTimeout(() => {
+                const removeBtn = document.getElementById('removePauseDateBtn');
+                if (removeBtn) {
+                    removeBtn.onclick = async () => {
+                        await api.post(`/api/admin/markets/${market.id}/pause-date`, { pauseAt: null });
+                        toast.info("Date de gel supprimée");
+                        modal.close();
+                        await router.fetchGlobalData();
+                        router.renderCurrentView();
+                    };
+                }
+            }, 50);
+        };
+    }
+
     const pauseBtn = document.querySelector('.admin-direct-pause');
     if (pauseBtn) {
         pauseBtn.onclick = async () => {
-            await api.post(`/api/admin/markets/${market.id}/toggle-pause`);
-            toast.info("Statut mis à jour");
-            await router.fetchGlobalData();
-            router.renderCurrentView();
+            try {
+                const res = await api.post(`/api/admin/markets/${market.id}/toggle-pause`);
+                toast.info(res.status === 'paused' ? "Marché mis en pause" : "Marché réactivé");
+                await router.fetchGlobalData();
+                router.renderCurrentView();
+            } catch (e) {
+                toast.error("Erreur lors de la modification du statut");
+            }
         };
     }
 
