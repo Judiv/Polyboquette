@@ -93,23 +93,8 @@ DEFAULT_DB = {
 _db_lock = threading.Lock()
 _cached_db = None
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SSE EVENT BROADCASTER
-# ──────────────────────────────────────────────────────────────────────────────
-_sse_clients = []
-_sse_lock = threading.Lock()
-
 def broadcast_sse(event_type, data):
-    with _sse_lock:
-        msg = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-        dead_clients = []
-        for q in _sse_clients:
-            try:
-                q.put_nowait(msg)
-            except Exception:
-                dead_clients.append(q)
-        for d in dead_clients:
-            _sse_clients.remove(d)
+    pass
 
 # ──────────────────────────────────────────────────────────────────────────────
 # RATE LIMITING
@@ -427,33 +412,6 @@ def root_static(filename):
         return send_from_directory(BASE_DIR, filename)
     abort(404)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FLUX TEMPS RÉEL (SSE STREAM)
-# ──────────────────────────────────────────────────────────────────────────────
-@app.route("/api/stream")
-def sse_stream():
-    def event_stream():
-        client_queue = queue.Queue(maxsize=30)
-        with _sse_lock:
-            _sse_clients.append(client_queue)
-        try:
-            yield f"event: connected\ndata: {json.dumps({'status': 'ok'})}\n\n"
-            while True:
-                try:
-                    msg = client_queue.get(timeout=20)
-                    yield msg
-                except queue.Empty:
-                    yield ": keepalive\n\n"
-        finally:
-            with _sse_lock:
-                if client_queue in _sse_clients:
-                    _sse_clients.remove(client_queue)
-
-    return Response(event_stream(), mimetype="text/event-stream", headers={
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no",
-        "Connection": "keep-alive"
-    })
 
 # ──────────────────────────────────────────────────────────────────────────────
 # AUTHENTIFICATION & COMPTES

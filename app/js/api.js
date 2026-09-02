@@ -1,10 +1,10 @@
 /**
- * PolyBoquette - API Client & Realtime SSE
+ * PolyBoquette - API Client & Smart Sync
  */
 
 import { state } from './state.js';
 
-let sseSource = null;
+let syncInterval = null;
 
 export const api = {
     async request(method, url, data = null) {
@@ -40,44 +40,26 @@ export const api = {
     post(url, data) { return this.request('POST', url, data); },
     delete(url) { return this.request('DELETE', url); },
 
-    // Initialisation du flux temps réel SSE
+    // Synchronisation d'arrière-plan ultra-légère et non-bloquante
     initSSE(onUpdateCallback) {
-        if (sseSource) {
-            sseSource.close();
-            sseSource = null;
+        if (syncInterval) {
+            clearInterval(syncInterval);
+            syncInterval = null;
         }
 
-        try {
-            sseSource = new EventSource('/api/stream');
+        // Rafraîchissement automatique toutes les 6 secondes uniquement si l'onglet est actif
+        syncInterval = setInterval(async () => {
+            if (document.hidden || !state.currentUser) return;
 
-            sseSource.addEventListener('market_update', (e) => {
-                try {
-                    const payload = JSON.parse(e.data);
-                    if (onUpdateCallback) onUpdateCallback('market_update', payload);
-                } catch (err) { console.error('SSE JSON error', err); }
-            });
-
-            sseSource.addEventListener('comment_added', (e) => {
-                try {
-                    const payload = JSON.parse(e.data);
-                    if (onUpdateCallback) onUpdateCallback('comment_added', payload);
-                } catch (err) { console.error('SSE JSON error', err); }
-            });
-
-            sseSource.addEventListener('user_update', (e) => {
-                try {
-                    const payload = JSON.parse(e.data);
-                    if (state.currentUser && payload.userId === state.currentUser.id) {
-                        state.setUser({ ...state.currentUser, ...payload.user });
-                    }
-                } catch (err) { console.error('SSE JSON error', err); }
-            });
-
-            sseSource.onerror = () => {
-                // Auto-reconnect géré par EventSource
-            };
-        } catch (e) {
-            console.warn("SSE not supported or failed to initialize", e);
-        }
+            try {
+                const markets = await this.get('/api/markets');
+                if (markets && Array.isArray(markets)) {
+                    state.setMarkets(markets);
+                    if (onUpdateCallback) onUpdateCallback('market_update', markets);
+                }
+            } catch (e) {
+                // Ignore silent sync errors
+            }
+        }, 6000);
     }
 };
