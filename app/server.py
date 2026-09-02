@@ -459,6 +459,7 @@ def auth_login():
     user["session_token"] = token
     save_db(db)
 
+    session.permanent = True
     session["user_id"] = user["id"]
     session["token"]   = token
     return jsonify({"user": safe_user(user)})

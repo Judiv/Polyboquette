@@ -547,8 +547,11 @@ function renderChart(market) {
                     }
                 },
                 tooltip: {
+                    usePointStyle: true,
+                    boxPadding: 4,
+                    itemSort: (a, b) => (Number(b.raw) || 0) - (Number(a.raw) || 0),
                     callbacks: {
-                        label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}% (x${formatOdds(AMM.probToDecimalOdds(ctx.raw))})`
+                        label: (ctx) => ` ${ctx.dataset.label}: ${ctx.raw}% (x${formatOdds(AMM.probToDecimalOdds(ctx.raw))})`
                     }
                 }
             },
