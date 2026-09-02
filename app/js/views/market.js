@@ -469,7 +469,15 @@ function renderChart(market) {
             plugins: {
                 legend: {
                     position: 'top',
-                    labels: { color: textColor, font: { family: 'Inter', size: 11, weight: '600' } }
+                    labels: {
+                        usePointStyle: true,
+                        pointStyle: 'circle',
+                        boxWidth: 8,
+                        boxHeight: 8,
+                        padding: 16,
+                        color: textColor,
+                        font: { family: 'Inter', size: 12, weight: '600' }
+                    }
                 },
                 tooltip: {
                     callbacks: {

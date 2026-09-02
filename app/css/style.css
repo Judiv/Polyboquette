@@ -1137,6 +1137,65 @@ button:active {
 
 .hidden { display: none !important; }
 
+/* ───────────────────────────────────────────────────────── */
+/* PROPOSALS CARDS & ERGONOMICS */
+/* ───────────────────────────────────────────────────────── */
+.proposals-grid-layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 850px) {
+  .proposals-grid-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.proposals-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+}
+
+.proposal-card-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+  transition: all 0.2s;
+}
+
+.proposal-card-item:hover {
+  border-color: var(--accent-color);
+}
+
+.choice-tag {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.admin-note-bubble {
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid #ef4444;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #ef4444;
+  line-height: 1.35;
+}
+
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
@@ -1146,3 +1205,4 @@ button:active {
   from { opacity: 1; transform: translateY(0); }
   to { opacity: 0; transform: translateY(-10px); }
 }
+

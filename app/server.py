@@ -821,9 +821,11 @@ def handle_proposals():
     db = load_db()
     user = db["users"].get(session["user_id"])
     if request.method == "GET":
-        if user.get("role") == "admin":
+        scope = request.args.get("scope", "")
+        if user.get("role") == "admin" and scope == "all":
             return jsonify(db.get("proposals", []))
-        return jsonify([p for p in db.get("proposals", []) if p["authorId"] == user["id"]])
+        valid_user_ids = {str(user["id"]), str(user.get("username")), str(user.get("nums"))}
+        return jsonify([p for p in db.get("proposals", []) if str(p.get("authorId")) in valid_user_ids])
 
     data = request.get_json() or {}
     title = (data.get("title") or "").strip()
