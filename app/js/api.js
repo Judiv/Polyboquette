@@ -40,26 +40,34 @@ export const api = {
     post(url, data) { return this.request('POST', url, data); },
     delete(url) { return this.request('DELETE', url); },
 
-    // Synchronisation d'arrière-plan ultra-légère et non-bloquante
+    // Synchronisation d'arrière-plan intelligente et non-destructive
     initSSE(onUpdateCallback) {
         if (syncInterval) {
             clearInterval(syncInterval);
             syncInterval = null;
         }
 
-        // Rafraîchissement automatique toutes les 6 secondes uniquement si l'onglet est actif
+        // Rafraîchissement automatique toutes les 8 secondes uniquement si l'onglet est actif
         syncInterval = setInterval(async () => {
             if (document.hidden || !state.currentUser) return;
+
+            // Ne pas écraser l'affichage si l'utilisateur est en train de saisir dans un champ ou une modale
+            const activeTag = document.activeElement ? document.activeElement.tagName : '';
+            const isTyping = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT';
+            const isModalOpen = !!document.querySelector('.modal-overlay');
+            const isBetSlipOpen = state.betSlip && state.betSlip.isOpen;
+
+            if (isTyping || isModalOpen || isBetSlipOpen) return;
 
             try {
                 const markets = await this.get('/api/markets');
                 if (markets && Array.isArray(markets)) {
-                    state.setMarkets(markets);
-                    if (onUpdateCallback) onUpdateCallback('market_update', markets);
+                    state.markets = markets;
+                    if (onUpdateCallback) onUpdateCallback('markets_sync', markets);
                 }
             } catch (e) {
-                // Ignore silent sync errors
+                // Ignore silent background errors
             }
-        }, 6000);
+        }, 8000);
     }
 };

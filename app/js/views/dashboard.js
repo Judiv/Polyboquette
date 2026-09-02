@@ -70,7 +70,7 @@ export function renderDashboard() {
         <div class="dash-controls">
             <div class="search-bar-wrapper">
                 <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                <input type="text" id="dashSearchInput" value="${esc(state.searchQuery)}" placeholder="Rechercher un marché, un mot..." class="search-input">
+                <input type="text" id="dashSearchInput" value="${esc(state.searchQuery)}" placeholder="Rechercher un marché, un choix..." class="search-input" autocomplete="off">
                 ${state.searchQuery ? `<button class="search-clear-btn" id="clearSearchBtn"><i class="fa-solid fa-xmark"></i></button>` : ''}
             </div>
 
@@ -124,7 +124,7 @@ export function renderDashboard() {
     // Filtrage et Tri
     let filtered = markets.filter(m => {
         if (state.selectedCategoryId !== 'all' && m.categoryId !== state.selectedCategoryId) return false;
-        if (state.marketStatusFilter === 'open' && m.status !== 'open') return false;
+        if (state.marketStatusFilter === 'open' && m.status !== 'open' && m.status !== 'paused') return false;
         if (state.marketStatusFilter === 'closed' && m.status !== 'resolved' && m.status !== 'cancelled') return false;
         if (state.marketStatusFilter === 'my_bets') {
             const hasMyBet = (m.bets || []).some(b => String(b.userId) === String(user.id) || String(b.userId) === String(user.username) || String(b.userId) === String(user.nums));
@@ -288,15 +288,40 @@ export function attachDashboardEvents() {
         };
     }
 
+    // Recherche Réactive sans destruction de DOM pour ne JAMAIS perdre le focus
     const searchInput = document.getElementById('dashSearchInput');
     if (searchInput) {
         searchInput.oninput = (e) => {
+            const query = e.target.value.toLowerCase().trim();
             state.searchQuery = e.target.value;
-            router.renderCurrentView();
-            const newIn = document.getElementById('dashSearchInput');
-            if (newIn) {
-                newIn.focus();
-                newIn.setSelectionRange(newIn.value.length, newIn.value.length);
+
+            const clearBtn = document.getElementById('clearSearchBtn');
+            if (clearBtn) clearBtn.style.display = query ? '' : 'none';
+
+            let visibleCount = 0;
+            document.querySelectorAll('.market-card').forEach(card => {
+                const text = card.textContent.toLowerCase();
+                const match = !query || text.includes(query);
+                card.style.display = match ? '' : 'none';
+                if (match) visibleCount++;
+            });
+
+            let emptyEl = document.getElementById('dashEmptySearchMsg');
+            const grid = document.querySelector('.market-grid');
+            if (visibleCount === 0 && grid) {
+                if (!emptyEl) {
+                    emptyEl = document.createElement('div');
+                    emptyEl.id = 'dashEmptySearchMsg';
+                    emptyEl.className = 'empty-state';
+                    emptyEl.style.gridColumn = '1 / -1';
+                    emptyEl.innerHTML = `
+                        <i class="fa-solid fa-magnifying-glass fa-2x" style="color:var(--text-secondary); margin-bottom:0.75rem;"></i>
+                        <h3>Aucun marché ne correspond à votre recherche</h3>
+                    `;
+                    grid.appendChild(emptyEl);
+                }
+            } else if (emptyEl) {
+                emptyEl.remove();
             }
         };
     }
@@ -305,7 +330,11 @@ export function attachDashboardEvents() {
     if (clearBtn) {
         clearBtn.onclick = () => {
             state.searchQuery = '';
-            router.renderCurrentView();
+            if (searchInput) {
+                searchInput.value = '';
+                searchInput.dispatchEvent(new Event('input'));
+                searchInput.focus();
+            }
         };
     }
 
@@ -432,13 +461,20 @@ export function attachDashboardEvents() {
     document.querySelectorAll('.card-admin-pause').forEach(btn => {
         btn.onclick = async (e) => {
             e.stopPropagation();
+            const mId = btn.dataset.id;
+            btn.disabled = true;
             try {
-                const res = await api.post(`/api/admin/markets/${btn.dataset.id}/toggle-pause`);
+                const res = await api.post(`/api/admin/markets/${mId}/toggle-pause`);
+                // Mise à jour immédiate dans le state local
+                const idx = state.markets.findIndex(m => m.id === mId);
+                if (idx !== -1) {
+                    state.markets[idx] = res.market;
+                }
                 toast.info(res.status === 'paused' ? "Marché mis en pause" : "Marché réactivé");
-                await router.fetchGlobalData();
                 router.renderCurrentView();
             } catch (err) {
-                toast.error("Erreur de modification du statut");
+                toast.error(err.message || "Erreur de modification du statut");
+                btn.disabled = false;
             }
         };
     });

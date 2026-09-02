@@ -24,14 +24,21 @@ async function initApp() {
     // 4. Initialiser le routeur
     router.init();
 
-    // 5. Initialiser le flux temps réel SSE
+    // 5. Initialiser le flux de synchronisation
     api.initSSE((eventType, payload) => {
-        if (eventType === 'market_update') {
+        const activeTag = document.activeElement ? document.activeElement.tagName : '';
+        const isTyping = activeTag === 'INPUT' || activeTag === 'TEXTAREA';
+        if (isTyping) return;
+
+        if (eventType === 'markets_sync') {
+            if (state.currentRoute === 'dashboard') {
+                // Mise à jour fluide du dashboard si pas d'interaction en cours
+                router.renderCurrentView();
+            }
+        } else if (eventType === 'market_update') {
             const idx = state.markets.findIndex(m => m.id === payload.id);
             if (idx !== -1) {
                 state.markets[idx] = payload;
-                state.setMarkets([...state.markets]);
-                // Si on est sur la vue de ce marché ou le dashboard, re-render discret
                 if (state.currentRoute === 'dashboard' || (state.currentRoute === 'market' && state.routeParams.marketId === payload.id)) {
                     router.renderCurrentView();
                 }

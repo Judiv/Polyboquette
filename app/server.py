@@ -1083,6 +1083,9 @@ def admin_toggle_pause(market_id):
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
     if not m: return jsonify({"error": "Marché introuvable"}), 404
 
+    if m.get("status") in ["resolved", "cancelled"]:
+        return jsonify({"error": "Ce marché est déjà clôturé ou résolu. Les gains ont été distribués, il ne peut pas être réouvert."}), 400
+
     if m.get("status") == "open":
         m["status"] = "paused"
         action = "Mise en pause"

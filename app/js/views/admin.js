@@ -132,7 +132,7 @@ function renderAdminMembers() {
                             const isFrozen = u.status === 'frozen';
                             const isPending = u.status === 'pending';
                             return `
-                                <tr>
+                                <tr class="admin-user-row">
                                     <td>
                                         <b>${esc(u.name)}</b>
                                         <div style="font-size:0.75rem; color:var(--text-secondary);">${esc(u.email || 'Pas d\'e-mail')}</div>
@@ -431,14 +431,16 @@ function bindAdminActionListeners() {
         };
     });
 
-    // Recherche Membres
+    // Recherche Membres (Filtrage réactif sans rechargement de page pour garder le focus)
     const searchIn = document.getElementById('adminUserSearchInput');
     if (searchIn) {
         searchIn.oninput = (e) => {
+            const query = e.target.value.toLowerCase().trim();
             state.adminSearchUser = e.target.value;
-            router.renderCurrentView();
-            const newIn = document.getElementById('adminUserSearchInput');
-            if (newIn) { newIn.focus(); newIn.setSelectionRange(newIn.value.length, newIn.value.length); }
+            document.querySelectorAll('.admin-user-row').forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = !query || text.includes(query) ? '' : 'none';
+            });
         };
     }
 
