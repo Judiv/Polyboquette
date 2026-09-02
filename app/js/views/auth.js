@@ -19,8 +19,8 @@ export function renderLogin() {
 
             <div style="display:flex; flex-direction:column; gap:1rem;">
                 <div>
-                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.35rem;">Num's (Identifiant)</label>
-                    <input type="text" id="loginNums" class="input-full" placeholder="Ex: 11-96(0) ou 11-96" autocomplete="username">
+                    <label style="display:block; font-size:0.85rem; font-weight:600; margin-bottom:0.35rem;">Num's ou Identifiant</label>
+                    <input type="text" id="loginNums" class="input-full" placeholder="Ex: 11-96 ou votre pseudo" autocomplete="username">
                 </div>
 
                 <div>

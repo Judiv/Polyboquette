@@ -1,156 +1,93 @@
 /**
- * PolyBoquette - Automated Market Maker (AMM) Engine
- * Implémentation du modèle CPMM (Constant Product Market Maker)
- * pour marchés binaires et à choix multiples.
+ * PolyBoquette - Moteur de Cotation & Cotes Continues (Anti-Arbitrage)
  */
 
 export const AMM = {
     /**
-     * Calcule les probabilités instantanées (%) de chaque option.
-     * Pour un marché binaire/multi avec réserves pool { o1: shares1, o2: shares2, ... }
-     */
-    getProbabilities(market) {
-        if (!market || !market.options || market.options.length === 0) return {};
-        const options = market.options;
-
-        // Si réserves AMM présentes
-        if (market.poolReserves) {
-            const inverses = {};
-            let sumInv = 0;
-            for (const opt of options) {
-                const r = Math.max(1, market.poolReserves[opt.id] || 100);
-                const inv = 1 / r;
-                inverses[opt.id] = inv;
-                sumInv += inv;
-            }
-            const probs = {};
-            let sumRounded = 0;
-            options.forEach((opt, idx) => {
-                const p = (inverses[opt.id] / sumInv) * 100;
-                const rounded = idx === options.length - 1 ? Math.max(1, 100 - sumRounded) : Math.round(p);
-                probs[opt.id] = Math.min(99, Math.max(1, rounded));
-                sumRounded += probs[opt.id];
-            });
-            return probs;
-        }
-
-        // Fallback / Initialisation équilibrée
-        const total = options.reduce((sum, o) => sum + (o.shares || 0), 0);
-        if (total <= 0) {
-            const def = Math.round(100 / options.length);
-            const res = {};
-            options.forEach(o => res[o.id] = def);
-            return res;
-        }
-        const res = {};
-        options.forEach(o => {
-            res[o.id] = Math.max(1, Math.min(99, Math.round(((o.shares || 0) / total) * 100)));
-        });
-        return res;
-    },
-
-    /**
-     * Convertit une probabilité (1 à 99%) en cote décimale européenne (ex: 40% -> 2.50)
+     * Calcule la cote décimale européenne à partir d'une probabilité en pourcentage.
+     * Ex: 50% -> x2.00, 25% -> x4.00, 80% -> x1.25
      */
     probToDecimalOdds(probPercent) {
-        if (!probPercent || probPercent <= 0) return 99.0;
-        const odds = 100 / Math.max(1, Math.min(99, probPercent));
-        return Math.round(odds * 100) / 100;
+        if (!probPercent || probPercent <= 0) return 1.01;
+        if (probPercent >= 100) return 1.01;
+        return Math.max(1.01, 100 / probPercent);
     },
 
     /**
-     * Simule un achat de parts pour une option donnée avec un montant en points.
-     * Retourne : { sharesBought, payoutIfWin, decimalOdds, avgPrice, priceImpact, newProb }
+     * Calcule les probabilités de chaque option d'un marché basées sur les parts réelles.
      */
-    simulateBuy(market, optId, amountPoints) {
-        const amount = Math.floor(Number(amountPoints));
-        if (isNaN(amount) || amount <= 0) {
-            return {
-                sharesBought: 0,
-                payoutIfWin: 0,
-                decimalOdds: 1.0,
-                avgPrice: 0,
-                priceImpact: 0,
-                newProb: 0
-            };
+    getProbabilities(market) {
+        const options = market.options || [];
+        if (!options || options.length === 0) return {};
+
+        const total = options.reduce((sum, o) => sum + (o.shares || 0), 0);
+        if (total <= 0) {
+            const n = options.length;
+            const equal = Math.round(100 / n);
+            const res = {};
+            options.forEach(o => res[o.id] = equal);
+            return res;
         }
 
-        const currentProbs = this.getProbabilities(market);
-        const currentProb = currentProbs[optId] || 50;
+        const probs = {};
+        let sumRounded = 0;
+        options.forEach((opt, idx) => {
+            const pct = ((opt.shares || 0) / total) * 100;
+            const rounded = (idx < options.length - 1) ? Math.round(pct) : Math.max(1, 100 - sumRounded);
+            probs[opt.id] = Math.max(1, Math.min(99, rounded));
+            sumRounded += probs[opt.id];
+        });
 
-        // Modèle CPMM pour options binaires / multi
-        const reserves = market.poolReserves ? { ...market.poolReserves } : null;
-        let sharesBought = 0;
-        let newProb = currentProb;
+        return probs;
+    },
 
-        if (reserves && market.options.length === 2) {
-            const otherOpt = market.options.find(o => o.id !== optId);
-            const y = reserves[optId] || 100;       // réserve de l'option choisie
-            const n = reserves[otherOpt.id] || 100; // réserve de l'autre option
+    /**
+     * Simule un achat pour le Bet Slip
+     */
+    simulateBuy(market, optId, amount) {
+        const probs = this.getProbabilities(market);
+        const curProb = probs[optId] || 50;
+        const currentOdds = this.probToDecimalOdds(curProb);
 
-            // Shares = M + (y * M) / (n + M)
-            const deltaY = (y * amount) / (n + amount);
-            sharesBought = Math.floor(amount + deltaY);
+        // Simulation post-mise
+        const simulatedOptions = (market.options || []).map(o => ({
+            ...o,
+            shares: o.id === optId ? (o.shares || 0) + amount : (o.shares || 0)
+        }));
 
-            // Nouvelles réserves théoriques
-            const newY = Math.max(1, y - deltaY);
-            const newN = n + amount;
-            newProb = Math.min(99, Math.max(1, Math.round((newN / (newY + newN)) * 100)));
-        } else {
-            // Approximation AMM Multi-choix
-            const pFraction = currentProb / 100;
-            const mult = 1 / pFraction;
-            sharesBought = Math.floor(amount * mult);
-            newProb = Math.min(99, currentProb + Math.min(15, Math.round(amount / 50)));
-        }
+        const newProbs = this.getProbabilities({ options: simulatedOptions });
+        const newProb = newProbs[optId] || curProb;
+        const newOdds = this.probToDecimalOdds(newProb);
 
-        const payoutIfWin = sharesBought; // 1 share = 1 point if win
-        const decimalOdds = amount > 0 ? (payoutIfWin / amount).toFixed(2) : "1.00";
-        const avgPrice = amount > 0 ? (amount / sharesBought).toFixed(2) : "0.00";
-        const priceImpact = Math.max(0, newProb - currentProb);
+        // Gain estimé si vainqueur (calcul basé sur la cote d'entrée)
+        const estPayout = Math.floor(amount * currentOdds);
 
         return {
-            sharesBought,
-            payoutIfWin,
-            decimalOdds: parseFloat(decimalOdds),
-            avgPrice: parseFloat(avgPrice),
-            priceImpact,
-            newProb
+            currentProb: curProb,
+            newProb: newProb,
+            currentOdds: currentOdds,
+            newOdds: newOdds,
+            estPayout: estPayout,
+            priceImpact: newProb - curProb
         };
     },
 
     /**
-     * Simule la revente (Cashout) de N shares d'une position.
-     * Retourne les points récupérés et le prix unitaire moyen de revente.
+     * Simule un cashout équilibré
      */
-    simulateSell(market, optId, sharesToSell) {
-        const shares = Math.floor(Number(sharesToSell));
-        if (isNaN(shares) || shares <= 0) return { refundPoints: 0, sellPrice: 0 };
+    simulateCashout(market, bet) {
+        const probs = this.getProbabilities(market);
+        const curProb = probs[bet.optId] || 50;
+        const buyProb = bet.buyProb || curProb;
 
-        const currentProbs = this.getProbabilities(market);
-        const currentProb = currentProbs[optId] || 50;
+        const ratio = curProb / Math.max(1, buyProb);
+        const refund = Math.max(1, Math.floor(bet.amount * ratio * 0.95));
 
-        const reserves = market.poolReserves ? { ...market.poolReserves } : null;
-        let refundPoints = 0;
-
-        if (reserves && market.options.length === 2) {
-            const otherOpt = market.options.find(o => o.id !== optId);
-            const y = reserves[optId] || 100;
-            const n = reserves[otherOpt.id] || 100;
-
-            // Points reçus = (n * S) / (y + S)
-            const pts = (n * shares) / (y + shares);
-            refundPoints = Math.max(1, Math.floor(pts));
-        } else {
-            // Approximation au prix spot actuel
-            const pFraction = currentProb / 100;
-            refundPoints = Math.max(1, Math.floor(shares * pFraction));
-        }
-
-        const sellPrice = shares > 0 ? (refundPoints / shares).toFixed(2) : "0.00";
         return {
-            refundPoints,
-            sellPrice: parseFloat(sellPrice)
+            curProb,
+            buyProb,
+            refund,
+            pnl: refund - bet.amount
         };
     }
 };

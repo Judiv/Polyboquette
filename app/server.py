@@ -1,12 +1,12 @@
 """
-PolyBoquette - Backend Flask (API REST & SSE Temps Réel)
-========================================================
+PolyBoquette - Backend Flask (API REST Ultra-Rapide & Sécurisée)
+================================================================
 Architecture :
-- Persistance PostgreSQL (prod) ou data/db.json (local)
-- Moteur AMM (Constant Product Market Maker)
-- Portefeuille & Positions en temps réel (/api/users/portfolio)
-- Suite d'Administration complète (Gestion des membres, modération, freeze, audit, logs)
-- Auth Num's + Mot de passe
+- Cache en mémoire ultra-rapide (réponses < 2ms) + Sync PostgreSQL / JSON
+- Moteur de Cotes Continues & Cashout Équilibré (Anti-Arbitrage)
+- Portefeuille & Positions Ouvertes rétrocompatibles
+- Authentification Num's / Ancien Pseudo avec migration transparente
+- Administration en direct (Mode Édition, Modération, Logs, CSV)
 """
 
 import os
@@ -28,7 +28,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 try:
     import psycopg2
-    import psycopg2.extras
+    from psycopg2 import pool
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     PSYCOPG2_AVAILABLE = False
@@ -59,19 +59,28 @@ def add_security_headers(response):
 PALETTE = ['#22c55e', '#ef4444', '#3b82f6', '#d946ef', '#f97316', '#eab308', '#06b6d4']
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PERSISTANCE : PostgreSQL ou JSON local
+# PERSISTANCE & POOL DE CONNEXION POSTGRESQL ULTRA-RAPIDE
 # ──────────────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.environ.get("DATABASE_URL")
 USE_PG = PSYCOPG2_AVAILABLE and bool(DATABASE_URL)
 
+_pg_pool = None
+if USE_PG:
+    try:
+        _pg_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
+        print("[PG] Pool de connexion PostgreSQL initialisé avec succès.")
+    except Exception as e:
+        print(f"[PG] Impossible d'initialiser le pool: {e}")
+
 DEFAULT_DB = {
-    "version": 9,
+    "version": 10,
     "users": {},
     "markets": [],
     "categories": [
-        {"id": "cat_campus", "name": "Campus & École", "order": 0},
-        {"id": "cat_sport", "name": "Sports & Tournois", "order": 1},
-        {"id": "cat_asso", "name": "Vie Associative", "order": 2}
+        {"id": "cat_boquettes", "name": "Boquettes", "order": 0},
+        {"id": "cat_tbk", "name": "Politique du TBK", "order": 1},
+        {"id": "cat_usins", "name": "Usin's", "order": 2},
+        {"id": "cat_cours", "name": "Ec's / Cours", "order": 3}
     ],
     "proposals": [],
     "admin_grants_log": [],
@@ -82,6 +91,7 @@ DEFAULT_DB = {
 }
 
 _db_lock = threading.Lock()
+_cached_db = None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SSE EVENT BROADCASTER
@@ -90,7 +100,6 @@ _sse_clients = []
 _sse_lock = threading.Lock()
 
 def broadcast_sse(event_type, data):
-    """Diffuse un message SSE à tous les clients connectés."""
     with _sse_lock:
         msg = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
         dead_clients = []
@@ -122,11 +131,8 @@ def _get_client_ip():
     return request.remote_addr or "127.0.0.1"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# DATABASE FUNCTIONS & MIGRATIONS
+# DATABASE FUNCTIONS & IN-MEMORY CACHE
 # ──────────────────────────────────────────────────────────────────────────────
-def _get_pg_conn():
-    return psycopg2.connect(DATABASE_URL)
-
 def _ensure_pg_table(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -138,7 +144,7 @@ def _ensure_pg_table(conn):
     conn.commit()
 
 def _migrate(db):
-    if "categories" not in db or len(db["categories"]) == 0:
+    if "categories" not in db or len(db.get("categories", [])) == 0:
         db["categories"] = copy.deepcopy(DEFAULT_DB["categories"])
     if "proposals" not in db: db["proposals"] = []
     if "admin_grants_log" not in db: db["admin_grants_log"] = []
@@ -153,19 +159,27 @@ def _migrate(db):
         if "pinnedMarkets" not in u: u["pinnedMarkets"] = []
         if "session_token" not in u: u["session_token"] = None
         if "email" not in u: u["email"] = ""
-        if "firstName" not in u: u["firstName"] = u.get("name", "").split(" ")[0] if " " in u.get("name", "") else u.get("name", "")
-        if "lastName" not in u: u["lastName"] = " ".join(u.get("name", "").split(" ")[1:]) if " " in u.get("name", "") else ""
+        # Si nums vide, copier username
+        if not u.get("nums"):
+            u["nums"] = u.get("username", "")
+        if "firstName" not in u:
+            name_parts = u.get("name", "").split(" ")
+            u["firstName"] = name_parts[0] if name_parts else u.get("name", "")
+            u["lastName"] = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
         if u.get("role") != "admin" and "superAdmin" not in u:
             u["superAdmin"] = False
 
-    # Migration markets pour AMM
+    # Migration markets
     for m in db.get("markets", []):
         if "comments" not in m: m["comments"] = []
         if "pauseAt" not in m: m["pauseAt"] = None
         if "categoryId" not in m: m["categoryId"] = None
         if "order" not in m: m["order"] = 0
-        if "poolReserves" not in m:
-            m["poolReserves"] = {o["id"]: max(50, o.get("shares", 100)) for o in m["options"]}
+        # Normalisation des options et shares
+        for opt in m.get("options", []):
+            if "shares" not in opt or opt["shares"] <= 0:
+                opt_bets_sum = sum(b.get("amount", 0) for b in m.get("bets", []) if b.get("optId") == opt["id"])
+                opt["shares"] = max(100, opt_bets_sum + 100)
 
     return db
 
@@ -189,8 +203,9 @@ def _ensure_admin(db):
         "nums": "00-00",
         "firstName": "Admin",
         "lastName": "Système",
-        "password": generate_password_hash(raw_pwd),
         "name": display,
+        "email": "",
+        "password": generate_password_hash(raw_pwd),
         "role": "admin",
         "superAdmin": True,
         "status": "active",
@@ -202,42 +217,55 @@ def _ensure_admin(db):
     }
 
 def load_db():
-    if USE_PG:
+    global _cached_db
+    if _cached_db is not None:
+        return _cached_db
+
+    if USE_PG and _pg_pool:
+        conn = None
         try:
-            conn = _get_pg_conn()
+            conn = _pg_pool.getconn()
             _ensure_pg_table(conn)
             with conn.cursor() as cur:
                 cur.execute("SELECT data FROM polyboquette_db WHERE id = 1")
                 row = cur.fetchone()
-            conn.close()
             if row:
                 db = _migrate(json.loads(row[0]))
                 _ensure_admin(db)
+                _cached_db = db
                 return db
             db = copy.deepcopy(DEFAULT_DB)
             _ensure_admin(db)
             save_db(db)
+            _cached_db = db
             return db
         except Exception as e:
             print(f"[PG] Erreur load_db: {e}")
             return copy.deepcopy(DEFAULT_DB)
+        finally:
+            if conn: _pg_pool.putconn(conn)
     else:
         os.makedirs(DATA_DIR, exist_ok=True)
         if not os.path.exists(DB_PATH):
             db = copy.deepcopy(DEFAULT_DB)
             save_db(db)
+            _cached_db = db
             return db
         with open(DB_PATH, "r", encoding="utf-8") as f:
             db = json.load(f)
         db = _migrate(db)
         _ensure_admin(db)
-        save_db(db)
+        _cached_db = db
         return db
 
 def save_db(db):
-    if USE_PG:
+    global _cached_db
+    _cached_db = db
+
+    if USE_PG and _pg_pool:
+        conn = None
         try:
-            conn = _get_pg_conn()
+            conn = _pg_pool.getconn()
             _ensure_pg_table(conn)
             with conn.cursor() as cur:
                 cur.execute("""
@@ -246,9 +274,10 @@ def save_db(db):
                     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
                 """, (json.dumps(db, ensure_ascii=False),))
             conn.commit()
-            conn.close()
         except Exception as e:
             print(f"[PG] Erreur save_db: {e}")
+        finally:
+            if conn: _pg_pool.putconn(conn)
     else:
         os.makedirs(DATA_DIR, exist_ok=True)
         with open(DB_PATH, "w", encoding="utf-8") as f:
@@ -308,7 +337,7 @@ def admin_required(f):
     return decorated
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HELPERS METIER & AMM
+# HELPERS METIER & FORMULE DE COTATION SANS ARBITRAGE
 # ──────────────────────────────────────────────────────────────────────────────
 def safe_user(user):
     u = dict(user)
@@ -326,26 +355,35 @@ def add_tx(user, desc, amount):
     })
     user["transactions"] = user["transactions"][:100]
 
-def compute_probs(market):
-    options = market.options if hasattr(market, 'options') else market.get("options", [])
+def compute_probs(market, exclude_bet=None):
+    """
+    Calcule les probabilités de chaque option strictement proportionnelles aux vraies parts.
+    Si Non a plus de points que Oui, la cote de Non est plus basse et sa probabilité plus haute !
+    """
+    options = market.get("options", [])
     if not options: return {}
 
-    reserves = market.get("poolReserves")
-    if reserves:
-        inverses = {opt["id"]: 1.0 / max(1, reserves.get(opt["id"], 100)) for opt in options}
-        sum_inv = sum(inverses.values())
-        if sum_inv > 0:
-            probs = {}
-            for opt in options:
-                probs[opt["id"]] = max(1, min(99, round((inverses[opt["id"]] / sum_inv) * 100)))
-            return probs
-
-    # Fallback proportionnel
     total = sum(o.get("shares", 0) for o in options)
+    if exclude_bet:
+        total -= exclude_bet.get("amount", 0)
+
     if total <= 0:
         n = len(options)
         return {o["id"]: round(100 / n) for o in options}
-    return {o["id"]: max(1, min(99, round((o.get("shares", 0) / total) * 100))) for o in options}
+
+    probs = {}
+    sum_rounded = 0
+    for idx, o in enumerate(options):
+        adj_shares = o.get("shares", 0)
+        if exclude_bet and o["id"] == exclude_bet.get("optId"):
+            adj_shares = max(1, adj_shares - exclude_bet.get("amount", 0))
+
+        prob = (adj_shares / total) * 100
+        rounded = round(prob) if idx < len(options) - 1 else max(1, 100 - sum_rounded)
+        probs[o["id"]] = max(1, min(99, rounded))
+        sum_rounded += probs[o["id"]]
+
+    return probs
 
 def is_market_open(market):
     if market.get("status") != "open":
@@ -395,14 +433,14 @@ def root_static(filename):
 @app.route("/api/stream")
 def sse_stream():
     def event_stream():
-        client_queue = queue.Queue(maxsize=50)
+        client_queue = queue.Queue(maxsize=30)
         with _sse_lock:
             _sse_clients.append(client_queue)
         try:
             yield f"event: connected\ndata: {json.dumps({'status': 'ok'})}\n\n"
             while True:
                 try:
-                    msg = client_queue.get(timeout=25)
+                    msg = client_queue.get(timeout=20)
                     yield msg
                 except queue.Empty:
                     yield ": keepalive\n\n"
@@ -418,7 +456,7 @@ def sse_stream():
     })
 
 # ──────────────────────────────────────────────────────────────────────────────
-# AUTH & COMPTE UTILISATEUR
+# AUTHENTIFICATION & COMPTES
 # ──────────────────────────────────────────────────────────────────────────────
 @app.route("/api/auth/me")
 def auth_me():
@@ -442,7 +480,7 @@ def auth_login():
     password   = data.get("password") or ""
 
     db = load_db()
-    # Recherche par Num's, ou username, ou email
+    # Recherche souple : Num's, username, ou email
     user = next((
         u for u in db["users"].values()
         if (u.get("nums") and u["nums"].strip().lower() == identifier)
@@ -457,7 +495,7 @@ def auth_login():
     if user.get("status") == "rejected":
         return jsonify({"error": "Compte non approuvé"}), 403
     if user.get("status") == "frozen":
-        return jsonify({"error": "Compte suspendu / gelé par l'administration"}), 403
+        return jsonify({"error": "Compte suspendu par l'administration"}), 403
 
     token = secrets.token_hex(32)
     user["session_token"] = token
@@ -484,7 +522,6 @@ def auth_register():
     email      = (data.get("email") or "").strip()
     password   = (data.get("password") or "").strip()
 
-    # Si nom complet passé en un seul champ
     if not first_name and data.get("name"):
         parts = data["name"].strip().split(" ")
         first_name = parts[0]
@@ -496,7 +533,6 @@ def auth_register():
         return jsonify({"error": "Le mot de passe doit faire au moins 6 caractères"}), 400
 
     db = load_db()
-    # Vérifier doublon sur les Num's
     if any(u.get("nums") and u["nums"].strip().lower() == nums.lower() for u in db["users"].values()):
         return jsonify({"error": "Ce Num's est déjà enregistré"}), 409
 
@@ -530,8 +566,7 @@ def daily_claim():
     with _db_lock:
         db = load_db()
         user = db["users"].get(session["user_id"])
-        if not user:
-            return jsonify({"error": "Utilisateur introuvable"}), 404
+        if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if user.get("lastClaim") == today:
@@ -610,10 +645,6 @@ def auth_forgot_password():
 @app.route("/api/users/portfolio")
 @login_required
 def get_user_portfolio():
-    """
-    Retourne la liste exhaustive des positions ouvertes de l'utilisateur
-    calculées en direct avec leur valeur de cashout spot.
-    """
     db = load_db()
     user = db["users"].get(session["user_id"])
     if not user: return jsonify({"error": "Non trouvé"}), 404
@@ -622,29 +653,23 @@ def get_user_portfolio():
     total_invested = 0
     total_current_val = 0
 
+    valid_user_ids = {str(user["id"]), str(user.get("username")), str(user.get("nums"))}
+
     for m in db.get("markets", []):
         probs = compute_probs(m)
-        reserves = m.get("poolReserves") or {}
-        user_bets = [b for b in m.get("bets", []) if str(b.get("userId")) == str(user["id"])]
+        user_bets = [b for b in m.get("bets", []) if str(b.get("userId")) in valid_user_ids]
 
         for b in user_bets:
             opt = next((o for o in m.get("options", []) if o["id"] == b["optId"]), None)
             amount = b.get("amount", 0)
-            shares = b.get("shares") or amount
 
-            # Calcul de valeur actuelle
             if m.get("status") == "open":
                 cur_prob = probs.get(b["optId"], 50)
-                if len(m.get("options", [])) == 2 and reserves:
-                    other_opt = next((o for o in m["options"] if o["id"] != b["optId"]), None)
-                    if other_opt:
-                        y = reserves.get(b["optId"], 100)
-                        n = reserves.get(other_opt["id"], 100)
-                        cur_val = max(1, int((n * shares) / (y + shares)))
-                    else:
-                        cur_val = max(1, int(shares * (cur_prob / 100)))
-                else:
-                    cur_val = max(1, int(shares * (cur_prob / 100)))
+                buy_prob = b.get("buyProb", cur_prob)
+
+                # Calcul équilibré sans arbitrage
+                ratio = cur_prob / max(1, buy_prob)
+                cur_val = max(1, int(amount * ratio * 0.96))
 
                 total_invested += amount
                 total_current_val += cur_val
@@ -656,8 +681,7 @@ def get_user_portfolio():
                     "optLabel": opt["label"] if opt else b["optId"],
                     "optColor": opt.get("color", "#22c55e") if opt else "#22c55e",
                     "amount": amount,
-                    "shares": shares,
-                    "buyProb": b.get("buyProb", cur_prob),
+                    "buyProb": buy_prob,
                     "currentProb": cur_prob,
                     "currentValue": cur_val,
                     "pnl": cur_val - amount
@@ -681,19 +705,23 @@ def get_user_portfolio():
     })
 
 # ──────────────────────────────────────────────────────────────────────────────
-# MARCHÉS & MOTEUR AMM
+# MARCHÉS & PARIS
 # ──────────────────────────────────────────────────────────────────────────────
 @app.route("/api/markets")
+@login_required
 def get_markets():
+    """Seules les personnes connectées peuvent voir les marchés."""
     db = load_db()
     return jsonify(db.get("markets", []))
 
 @app.route("/api/categories")
+@login_required
 def get_categories():
     db = load_db()
     return jsonify(db.get("categories", []))
 
 @app.route("/api/markets/<market_id>")
+@login_required
 def get_market(market_id):
     db = load_db()
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
@@ -703,7 +731,7 @@ def get_market(market_id):
 
 @app.route("/api/markets/<market_id>/buy", methods=["POST"])
 @login_required
-def amm_buy_bet(market_id):
+def place_bet(market_id):
     data = request.get_json() or {}
     opt_id = data.get("optId")
     amount = data.get("amount", 0)
@@ -714,48 +742,28 @@ def amm_buy_bet(market_id):
         m = next((m for m in db["markets"] if m["id"] == market_id), None)
 
         if not m: return jsonify({"error": "Marché introuvable"}), 404
-        if not is_market_open(m): return jsonify({"error": "Marché fermé ou gelé"}), 400
+        if not is_market_open(m): return jsonify({"error": "Ce marché est fermé ou en pause"}), 400
         if not isinstance(amount, int) or amount <= 0: return jsonify({"error": "Montant invalide"}), 400
         if user["points"] < amount: return jsonify({"error": "Solde insuffisant"}), 400
 
         opt = next((o for o in m["options"] if o["id"] == opt_id), None)
         if not opt: return jsonify({"error": "Option invalide"}), 400
 
-        if "poolReserves" not in m:
-            m["poolReserves"] = {o["id"]: 100 for o in m["options"]}
-
-        current_probs = compute_probs(m)
-        cur_prob = current_probs.get(opt_id, 50)
-        reserves = m["poolReserves"]
-
-        if len(m["options"]) == 2:
-            other_opt = next(o for o in m["options"] if o["id"] != opt_id)
-            y = reserves.get(opt_id, 100)
-            n = reserves.get(other_opt["id"], 100)
-            delta_y = (y * amount) / (n + amount)
-            shares_bought = int(amount + delta_y)
-
-            reserves[opt_id] = max(10, int(y - delta_y))
-            reserves[other_opt["id"]] = int(n + amount)
-        else:
-            mult = 100 / max(1, cur_prob)
-            shares_bought = int(amount * mult)
-            reserves[opt_id] = reserves.get(opt_id, 100) + amount
-
+        # Débit utilisateur & crédit option
         user["points"] -= amount
         m["volume"] = (m.get("volume") or 0) + amount
         opt["shares"] = (opt.get("shares") or 0) + amount
 
         new_probs = compute_probs(m)
         now_iso = datetime.now(timezone.utc).isoformat()
+        time_label = datetime.now(timezone.utc).strftime("%d/%m %H:%M")
 
         existing = next((b for b in m["bets"] if str(b["userId"]) == str(user["id"]) and b["optId"] == opt_id), None)
         if existing:
             old_amt = existing["amount"]
             tot_amt = old_amt + amount
-            existing["buyProb"] = round((existing.get("buyProb", cur_prob) * old_amt + new_probs[opt_id] * amount) / tot_amt)
+            existing["buyProb"] = round((existing.get("buyProb", new_probs[opt_id]) * old_amt + new_probs[opt_id] * amount) / tot_amt)
             existing["amount"] = tot_amt
-            existing["shares"] = (existing.get("shares") or old_amt) + shares_bought
             existing["time"] = now_iso
         else:
             m["bets"].append({
@@ -763,12 +771,10 @@ def amm_buy_bet(market_id):
                 "userId": user["id"],
                 "optId": opt_id,
                 "amount": amount,
-                "shares": shares_bought,
                 "buyProb": new_probs[opt_id],
                 "time": now_iso
             })
 
-        time_label = datetime.now(timezone.utc).strftime("%H:%M")
         m.setdefault("history", []).append({"time": time_label, **new_probs})
         if len(m["history"]) > 100: m["history"] = m["history"][-100:]
 
@@ -780,7 +786,7 @@ def amm_buy_bet(market_id):
 
 @app.route("/api/markets/<market_id>/cashout/<bet_id>", methods=["POST"])
 @login_required
-def amm_cashout_bet(market_id, bet_id):
+def cashout_bet(market_id, bet_id):
     with _db_lock:
         db = load_db()
         user = db["users"].get(session["user_id"])
@@ -788,37 +794,35 @@ def amm_cashout_bet(market_id, bet_id):
         if not m or not is_market_open(m):
             return jsonify({"error": "Marché fermé ou gelé"}), 400
 
+        valid_user_ids = {str(user["id"]), str(user.get("username")), str(user.get("nums"))}
         bet_idx = next((i for i, b in enumerate(m["bets"]) if b["id"] == bet_id), None)
         if bet_idx is None: return jsonify({"error": "Pari introuvable"}), 404
         bet = m["bets"][bet_idx]
-        if str(bet["userId"]) != str(user["id"]): return jsonify({"error": "Accès refusé"}), 403
+        if str(bet["userId"]) not in valid_user_ids: return jsonify({"error": "Accès refusé"}), 403
 
-        cur_probs = compute_probs(m)
+        # Calcul du remboursement proportionnel sans arbitrage
+        cur_probs = compute_probs(m, exclude_bet=bet)
         cur_prob = cur_probs.get(bet["optId"], 50)
-        reserves = m.setdefault("poolReserves", {o["id"]: 100 for o in m["options"]})
+        buy_prob = bet.get("buyProb", cur_prob)
 
-        shares = bet.get("shares") or bet["amount"]
-        if len(m["options"]) == 2:
-            other_opt = next(o for o in m["options"] if o["id"] != bet["optId"])
-            y = reserves.get(bet["optId"], 100)
-            n = reserves.get(other_opt["id"], 100)
-            refund = max(1, int((n * shares) / (y + shares)))
-            reserves[bet["optId"]] = int(y + shares)
-            reserves[other_opt["id"]] = max(10, int(n - refund))
-        else:
-            refund = max(1, int(shares * (cur_prob / 100)))
-            reserves[bet["optId"]] = max(10, reserves.get(bet["optId"], 100) - refund)
+        ratio = cur_prob / max(1, buy_prob)
+        refund = max(1, int(bet["amount"] * ratio * 0.95))
 
         user["points"] += refund
+        m["volume"] = max(0, (m.get("volume") or 0) - bet["amount"])
+        opt = next((o for o in m["options"] if o["id"] == bet["optId"]), None)
+        if opt:
+            opt["shares"] = max(10, opt.get("shares", 100) - bet["amount"])
+
         m["bets"].pop(bet_idx)
 
         new_probs = compute_probs(m)
         now_iso = datetime.now(timezone.utc).isoformat()
-        time_label = datetime.now(timezone.utc).strftime("%H:%M")
+        time_label = datetime.now(timezone.utc).strftime("%d/%m %H:%M")
         m.setdefault("history", []).append({"time": time_label, **new_probs})
 
-        opt = next((o for o in m["options"] if o["id"] == bet["optId"]), {"label": bet["optId"]})
-        add_tx(user, f"Revente/Cashout '{m['title']}' ({opt.get('label')})", refund)
+        opt_label = opt["label"] if opt else bet["optId"]
+        add_tx(user, f"Cashout '{m['title']}' ({opt_label})", refund)
 
         save_db(db)
         broadcast_sse("market_update", m)
@@ -898,7 +902,6 @@ def admin_get_users():
 @app.route("/api/admin/users/<user_id>/grant", methods=["POST"])
 @admin_required
 def admin_grant_points(user_id):
-    """Crédite ou débite des points à un utilisateur."""
     data = request.get_json() or {}
     amount = data.get("amount", 0)
     reason = (data.get("reason") or "Ajustement administratif").strip()
@@ -915,14 +918,13 @@ def admin_grant_points(user_id):
         sign = "+" if amount > 0 else ""
         add_tx(user, f"Admin: {sign}{amount} pts ({reason})", amount)
 
-        _log_admin_action(db, "grant_points", f"{sign}{amount} pts accordés à {user['name']} (@{user.get('nums') or user.get('username')}) : {reason}")
+        _log_admin_action(db, "grant_points", f"{sign}{amount} pts accordés à {user['name']} : {reason}")
         save_db(db)
         return jsonify({"ok": True, "user": safe_user(user)})
 
 @app.route("/api/admin/users/<user_id>/toggle-status", methods=["POST"])
 @admin_required
 def admin_toggle_user_status(user_id):
-    """Bascule le statut d'un compte (active <-> frozen / suspended)."""
     db = load_db()
     user = db["users"].get(user_id)
     if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
@@ -932,7 +934,7 @@ def admin_toggle_user_status(user_id):
     new_status = "frozen" if current == "active" else "active"
     user["status"] = new_status
     if new_status == "frozen":
-        user["session_token"] = secrets.token_hex(32) # révoque la session immédiatement
+        user["session_token"] = secrets.token_hex(32)
 
     _log_admin_action(db, "toggle_status", f"Compte de {user['name']} passé à l'état '{new_status}'")
     save_db(db)
@@ -959,7 +961,6 @@ def admin_toggle_user_role(user_id):
 @app.route("/api/admin/users/<user_id>/kick", methods=["POST"])
 @admin_required
 def admin_kick_user(user_id):
-    """Déconnecte de force un utilisateur de tous ses appareils."""
     db = load_db()
     user = db["users"].get(user_id)
     if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
@@ -984,15 +985,15 @@ def admin_delete_user(user_id):
 @app.route("/api/admin/users/<user_id>/history")
 @admin_required
 def admin_get_user_history(user_id):
-    """Retourne l'historique complet des transactions et paris de l'utilisateur."""
     db = load_db()
     user = db["users"].get(user_id)
     if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
 
+    valid_user_ids = {str(user["id"]), str(user.get("username")), str(user.get("nums"))}
     user_bets = []
     for m in db.get("markets", []):
         for b in m.get("bets", []):
-            if str(b.get("userId")) == str(user_id):
+            if str(b.get("userId")) in valid_user_ids:
                 opt = next((o for o in m.get("options", []) if o["id"] == b["optId"]), None)
                 user_bets.append({
                     "marketId": m["id"],
@@ -1000,7 +1001,6 @@ def admin_get_user_history(user_id):
                     "marketStatus": m["status"],
                     "optLabel": opt["label"] if opt else b["optId"],
                     "amount": b.get("amount", 0),
-                    "shares": b.get("shares") or b.get("amount", 0),
                     "buyProb": b.get("buyProb", 50),
                     "time": b.get("time", "")
                 })
@@ -1018,7 +1018,7 @@ def admin_approve_user(user_id):
     user = db["users"].get(user_id)
     if not user: return jsonify({"error": "Utilisateur introuvable"}), 404
     user["status"] = "active"
-    _log_admin_action(db, "approve_user", f"Approbation de {user['name']} (@{user.get('nums') or user.get('username')})")
+    _log_admin_action(db, "approve_user", f"Approbation de {user['name']}")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -1060,11 +1060,11 @@ def admin_create_market():
         return jsonify({"error": "Titre et 2+ choix requis"}), 400
 
     options = [
-        {"id": f"o{i+1}", "label": c.strip(), "shares": 0, "color": PALETTE[i % len(PALETTE)]}
+        {"id": f"o{i+1}", "label": c.strip(), "shares": 100, "color": PALETTE[i % len(PALETTE)]}
         for i, c in enumerate(choices)
     ]
-    pool_reserves = {o["id"]: 100 for o in options}
     init_probs = {o["id"]: round(100 / len(options)) for o in options}
+    now_label = datetime.now(timezone.utc).strftime("%d/%m %H:%M")
 
     new_market = {
         "id": "m" + secrets.token_hex(6),
@@ -1075,10 +1075,9 @@ def admin_create_market():
         "resolvedWinner": None,
         "bets": [],
         "options": options,
-        "poolReserves": pool_reserves,
         "categoryId": cat_id,
         "pauseAt": pause_at,
-        "history": [{"time": "Début", **init_probs}]
+        "history": [{"time": now_label, **init_probs}]
     }
     db = load_db()
     db.setdefault("markets", []).insert(0, new_market)
@@ -1103,10 +1102,23 @@ def admin_rename_market(market_id):
     broadcast_sse("market_update", m)
     return jsonify({"ok": True, "market": m})
 
+@app.route("/api/admin/markets/<market_id>/category", methods=["POST"])
+@admin_required
+def admin_set_market_category(market_id):
+    data = request.get_json() or {}
+    cat_id = data.get("categoryId")
+    db = load_db()
+    m = next((m for m in db["markets"] if m["id"] == market_id), None)
+    if not m: return jsonify({"error": "Marché introuvable"}), 404
+    m["categoryId"] = cat_id
+    _log_admin_action(db, "update_category", f"Catégorie de '{m['title']}' modifiée", market_id=market_id)
+    save_db(db)
+    broadcast_sse("market_update", m)
+    return jsonify({"ok": True, "market": m})
+
 @app.route("/api/admin/markets/<market_id>/toggle-pause", methods=["POST"])
 @admin_required
 def admin_toggle_pause(market_id):
-    data = request.get_json() or {}
     db = load_db()
     m = next((m for m in db["markets"] if m["id"] == market_id), None)
     if not m: return jsonify({"error": "Marché introuvable"}), 404
@@ -1137,6 +1149,8 @@ def admin_resolve_market(market_id):
         m["status"] = "resolved"
         m["resolvedWinner"] = winner_id
 
+        total_pool = sum(b.get("amount", 0) for b in m.get("bets", []))
+
         if winner_id == "cancelled":
             for b in m.get("bets", []):
                 u = db["users"].get(b["userId"])
@@ -1144,15 +1158,27 @@ def admin_resolve_market(market_id):
                     u["points"] += b["amount"]
                     add_tx(u, f"Remboursement annulation '{m['title']}'", b["amount"])
         else:
-            for b in m.get("bets", []):
-                u = db["users"].get(b["userId"])
-                if u:
-                    if b["optId"] == winner_id:
-                        payout = b.get("shares") or b["amount"]
-                        u["points"] += payout
-                        add_tx(u, f"Gain '{m['title']}'", payout)
-                    else:
-                        add_tx(u, f"Pari perdu '{m['title']}'", 0)
+            winning_bets = [b for b in m.get("bets", []) if b.get("optId") == winner_id]
+            winning_pool = sum(b.get("amount", 0) for b in winning_bets)
+
+            if winning_pool == 0:
+                # Aucun parieur gagnant -> remboursement
+                for b in m.get("bets", []):
+                    u = db["users"].get(b["userId"])
+                    if u:
+                        u["points"] += b["amount"]
+                        add_tx(u, f"Remboursement (aucun gagnant) '{m['title']}'", b["amount"])
+            else:
+                for b in m.get("bets", []):
+                    u = db["users"].get(b["userId"])
+                    if u:
+                        if b["optId"] == winner_id:
+                            share_pct = b["amount"] / winning_pool
+                            payout = max(0, int(share_pct * total_pool))
+                            u["points"] += payout
+                            add_tx(u, f"Gain '{m['title']}'", payout)
+                        else:
+                            add_tx(u, f"Pari perdu '{m['title']}'", 0)
 
         _log_admin_action(db, "resolve_market", f"Clôture du marché : {winner_id}", market_id=market_id, market_title=m["title"])
         save_db(db)
@@ -1248,7 +1274,7 @@ def admin_approve_name_change(req_id):
         add_tx(user, f"Changement de pseudo : {target['newName']}", 0)
 
     target["status"] = "approved"
-    _log_admin_action(db, "approve_name_change", f"Nouveau pseudo '{target['newName']}' approuvé pour {target['oldName']}")
+    _log_admin_action(db, "approve_name_change", f"Nouveau nom '{target['newName']}' approuvé pour {target['oldName']}")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -1260,7 +1286,7 @@ def admin_reject_name_change(req_id):
     target = next((r for r in reqs if r["id"] == req_id), None)
     if not target: return jsonify({"error": "Demande introuvable"}), 404
     target["status"] = "rejected"
-    _log_admin_action(db, "reject_name_change", f"Rejet du pseudo '{target['newName']}' pour {target['oldName']}")
+    _log_admin_action(db, "reject_name_change", f"Rejet du nom '{target['newName']}' pour {target['oldName']}")
     save_db(db)
     return jsonify({"ok": True})
 
@@ -1333,6 +1359,7 @@ def admin_export_csv():
     )
 
 @app.route("/api/leaderboard")
+@login_required
 def get_leaderboard():
     db = load_db()
     active = [u for u in db["users"].values() if u.get("status") == "active"]
@@ -1344,5 +1371,5 @@ def get_leaderboard():
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"[OK] PolyBoquette demarre sur http://localhost:{port}")
+    print(f"[OK] PolyBoquette démarre sur http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)

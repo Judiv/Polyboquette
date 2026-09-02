@@ -25,7 +25,7 @@ export function renderProfile() {
 
     return `
         <div class="profile-container">
-            <h1 class="page-title"><i class="fa-solid fa-circle-user"></i> Mon Profil Gadz'arts</h1>
+            <h1 class="page-title"><i class="fa-solid fa-circle-user"></i> Mon Profil</h1>
 
             <div class="profile-layout-grid">
                 <!-- Carte Informations Personnelles -->
