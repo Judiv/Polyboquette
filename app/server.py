@@ -128,6 +128,92 @@ def _ensure_pg_table(conn):
         """)
     conn.commit()
 
+def compute_probs(market, exclude_bet=None):
+    """
+    Calcule les probabilités de chaque option strictement proportionnelles aux vrais volumes misés (bets).
+    Règle mathématique :
+    - Plus une option a de points, plus sa probabilité est haute et sa cote basse.
+    - Une option sans mise a une probabilité minimale et une cote maximale.
+    """
+    options = market.get("options", [])
+    if not options: return {}
+
+    bets = market.get("bets", [])
+    n = len(options)
+    L = 50.0  # Liquidité de base
+    base = L / max(1, n)
+
+    vols = {o["id"]: 0 for o in options}
+    for b in bets:
+        if exclude_bet and b.get("id") == exclude_bet.get("id"):
+            continue
+        opt_id = b.get("optId")
+        if opt_id in vols:
+            vols[opt_id] += b.get("amount", 0)
+
+    total_vol = sum(vols.values())
+    total_weight = L + total_vol
+
+    probs = {}
+    sum_rounded = 0
+    for idx, o in enumerate(options):
+        weight = base + vols[o["id"]]
+        raw_pct = (weight / total_weight) * 100
+        rounded = round(raw_pct) if idx < n - 1 else max(1, 100 - sum_rounded)
+        probs[o["id"]] = max(1, min(99, rounded))
+        sum_rounded += probs[o["id"]]
+
+    return probs
+
+def rebuild_market_history(market):
+    """
+    Reconstruit la trajectoire historique des cotes/probabilités à partir de la chronologie réelle des paris.
+    Élimine tout décrochage ou saut incohérent.
+    """
+    options = market.get("options", [])
+    bets = market.get("bets", [])
+    if not options: return []
+
+    n = len(options)
+    L = 50.0
+    base = L / max(1, n)
+
+    init_p = {o["id"]: round(100 / n) for o in options}
+    history = [{"time": "Début", **init_p}]
+
+    vols = {o["id"]: 0 for o in options}
+    for b in bets:
+        opt_id = b.get("optId")
+        if opt_id in vols:
+            vols[opt_id] += b.get("amount", 0)
+        total_w = L + sum(vols.values())
+        step_p = {}
+        sum_r = 0
+        for idx, o in enumerate(options):
+            w = base + vols[o["id"]]
+            raw = (w / total_w) * 100
+            val = round(raw) if idx < n - 1 else max(1, 100 - sum_r)
+            step_p[o["id"]] = max(1, min(99, val))
+            sum_r += step_p[o["id"]]
+
+        t_label = b.get("time", "")
+        if t_label and len(t_label) >= 16:
+            try:
+                dt = datetime.fromisoformat(t_label.replace("Z", "+00:00"))
+                t_label = dt.strftime("%d/%m %H:%M")
+            except Exception:
+                pass
+        history.append({"time": t_label or "Pari", **step_p})
+
+    if len(history) == 1:
+        cur_p = compute_probs(market)
+        now_label = datetime.now(timezone.utc).strftime("%d/%m %H:%M")
+        history.append({"time": now_label, **cur_p})
+
+    if len(history) > 100:
+        history = history[-100:]
+    return history
+
 def _migrate(db):
     if "categories" not in db or len(db.get("categories", [])) == 0:
         db["categories"] = copy.deepcopy(DEFAULT_DB["categories"])
@@ -160,11 +246,19 @@ def _migrate(db):
         if "pauseAt" not in m: m["pauseAt"] = None
         if "categoryId" not in m: m["categoryId"] = None
         if "order" not in m: m["order"] = 0
-        # Normalisation des options et shares
+        
+        # Volume réel exact
+        m["volume"] = sum(b.get("amount", 0) for b in m.get("bets", []))
+
+        # Synchroniser les shares en pure liquidité (base + volume)
+        n = len(m.get("options", []))
+        base_w = round(50.0 / max(1, n))
         for opt in m.get("options", []):
-            if "shares" not in opt or opt["shares"] <= 0:
-                opt_bets_sum = sum(b.get("amount", 0) for b in m.get("bets", []) if b.get("optId") == opt["id"])
-                opt["shares"] = max(100, opt_bets_sum + 100)
+            opt_bets_sum = sum(b.get("amount", 0) for b in m.get("bets", []) if b.get("optId") == opt["id"])
+            opt["shares"] = base_w + opt_bets_sum
+
+        # Reconstruire l'historique propre
+        m["history"] = rebuild_market_history(m)
 
     return db
 
@@ -340,35 +434,6 @@ def add_tx(user, desc, amount):
     })
     user["transactions"] = user["transactions"][:100]
 
-def compute_probs(market, exclude_bet=None):
-    """
-    Calcule les probabilités de chaque option strictement proportionnelles aux vraies parts.
-    Si Non a plus de points que Oui, la cote de Non est plus basse et sa probabilité plus haute !
-    """
-    options = market.get("options", [])
-    if not options: return {}
-
-    total = sum(o.get("shares", 0) for o in options)
-    if exclude_bet:
-        total -= exclude_bet.get("amount", 0)
-
-    if total <= 0:
-        n = len(options)
-        return {o["id"]: round(100 / n) for o in options}
-
-    probs = {}
-    sum_rounded = 0
-    for idx, o in enumerate(options):
-        adj_shares = o.get("shares", 0)
-        if exclude_bet and o["id"] == exclude_bet.get("optId"):
-            adj_shares = max(1, adj_shares - exclude_bet.get("amount", 0))
-
-        prob = (adj_shares / total) * 100
-        rounded = round(prob) if idx < len(options) - 1 else max(1, 100 - sum_rounded)
-        probs[o["id"]] = max(1, min(99, rounded))
-        sum_rounded += probs[o["id"]]
-
-    return probs
 
 def is_market_open(market):
     if market.get("status") != "open":

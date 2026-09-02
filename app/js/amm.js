@@ -1,5 +1,5 @@
 /**
- * PolyBoquette - Moteur de Cotation & Cotes Continues (Anti-Arbitrage)
+ * PolyBoquette - Moteur de Cotation & Cotes Continues (Pure Volume Pari-Mutuel & Anti-Arbitrage)
  */
 
 export const AMM = {
@@ -10,30 +10,43 @@ export const AMM = {
     probToDecimalOdds(probPercent) {
         if (!probPercent || probPercent <= 0) return 1.01;
         if (probPercent >= 100) return 1.01;
-        return Math.max(1.01, 100 / probPercent);
+        return Math.max(1.01, parseFloat((100 / probPercent).toFixed(2)));
     },
 
     /**
-     * Calcule les probabilités de chaque option d'un marché basées sur les parts réelles.
+     * Calcule les probabilités de chaque option strictement dérivées des vrais volumes de paris (bets).
+     * Règle d'or : Plus une option accumule de points, plus sa probabilité est haute et sa cote basse.
      */
-    getProbabilities(market) {
+    getProbabilities(market, excludeBet = null) {
         const options = market.options || [];
         if (!options || options.length === 0) return {};
 
-        const total = options.reduce((sum, o) => sum + (o.shares || 0), 0);
-        if (total <= 0) {
-            const n = options.length;
-            const equal = Math.round(100 / n);
-            const res = {};
-            options.forEach(o => res[o.id] = equal);
-            return res;
-        }
+        const bets = market.bets || [];
+        const n = options.length;
+        const L = 50; // Prior de liquidité initiale
+        const base = L / n;
+
+        const vols = {};
+        options.forEach(o => vols[o.id] = 0);
+
+        bets.forEach(b => {
+            if (excludeBet && b.id === excludeBet.id) return;
+            const amt = Number(b.amount) || 0;
+            if (vols[b.optId] !== undefined) {
+                vols[b.optId] += amt;
+            }
+        });
+
+        const totalVol = Object.values(vols).reduce((s, v) => s + v, 0);
+        const totalWeight = L + totalVol;
 
         const probs = {};
         let sumRounded = 0;
+
         options.forEach((opt, idx) => {
-            const pct = ((opt.shares || 0) / total) * 100;
-            const rounded = (idx < options.length - 1) ? Math.round(pct) : Math.max(1, 100 - sumRounded);
+            const weight = base + (vols[opt.id] || 0);
+            const rawPct = (weight / totalWeight) * 100;
+            const rounded = (idx < n - 1) ? Math.round(rawPct) : Math.max(1, 100 - sumRounded);
             probs[opt.id] = Math.max(1, Math.min(99, rounded));
             sumRounded += probs[opt.id];
         });
@@ -50,16 +63,12 @@ export const AMM = {
         const currentOdds = this.probToDecimalOdds(curProb);
 
         // Simulation post-mise
-        const simulatedOptions = (market.options || []).map(o => ({
-            ...o,
-            shares: o.id === optId ? (o.shares || 0) + amount : (o.shares || 0)
-        }));
-
-        const newProbs = this.getProbabilities({ options: simulatedOptions });
+        const simulatedBets = [...(market.bets || []), { id: '_sim', optId, amount }];
+        const newProbs = this.getProbabilities({ ...market, bets: simulatedBets });
         const newProb = newProbs[optId] || curProb;
         const newOdds = this.probToDecimalOdds(newProb);
 
-        // Gain estimé si vainqueur (calcul basé sur la cote d'entrée)
+        // Gain estimé si vainqueur
         const estPayout = Math.floor(amount * currentOdds);
 
         return {
@@ -73,11 +82,11 @@ export const AMM = {
     },
 
     /**
-     * Simule un cashout équilibré
+     * Simule un cashout équilibré sans risque d'arbitrage
      */
     simulateCashout(market, bet) {
-        const probs = this.getProbabilities(market);
-        const curProb = probs[bet.optId] || 50;
+        const curProbs = this.getProbabilities(market, bet);
+        const curProb = curProbs[bet.optId] || 50;
         const buyProb = bet.buyProb || curProb;
 
         const ratio = curProb / Math.max(1, buyProb);
