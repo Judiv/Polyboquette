@@ -1246,3 +1246,496 @@ button:active {
   to { opacity: 0; transform: translateY(-10px); }
 }
 
+/* ────────────────────────────────────────────────────────────────────────── */
+/* LEADERBOARD (CLASSEMENT) STYLES */
+/* ────────────────────────────────────────────────────────────────────────── */
+.leaderboard-container {
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+  padding-bottom: 2rem;
+}
+
+.leaderboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.leaderboard-subtitle {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-top: 0.35rem;
+}
+
+.leaderboard-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 280px;
+}
+
+.leaderboard-search-box i.fa-magnifying-glass {
+  position: absolute;
+  left: 1rem;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.leaderboard-search-box input {
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: 0.65rem 2.2rem 0.65rem 2.4rem;
+  font-size: 0.88rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.leaderboard-search-box input:focus {
+  border-color: var(--accent-color);
+}
+
+.leaderboard-search-box button#clearLeaderboardSearch {
+  position: absolute;
+  right: 0.75rem;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+}
+
+/* Bandeau Position Personnelle */
+.my-rank-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+  border: 1.5px solid var(--accent-light);
+  box-shadow: 0 4px 20px var(--accent-transparent);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.4rem;
+  margin-bottom: 1.8rem;
+}
+
+.my-rank-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.my-rank-badge {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--accent-color);
+  background: var(--accent-transparent);
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-light);
+}
+
+.my-rank-name {
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.my-rank-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--accent-color);
+  color: #fff;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+}
+
+.my-rank-sub {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+}
+
+.my-rank-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.my-rank-points {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.pts-unit {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* PODIUM SECTION */
+.podium-section {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 1rem;
+  margin: 2rem 0 2.5rem 0;
+  padding: 0 0.5rem;
+}
+
+.podium-step {
+  flex: 1;
+  max-width: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+}
+
+.podium-crown {
+  color: #eab308;
+  font-size: 1.4rem;
+  margin-bottom: 0.35rem;
+  animation: floatCrown 2.5s ease-in-out infinite;
+}
+
+@keyframes floatCrown {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.podium-avatar-wrapper {
+  position: relative;
+  margin-bottom: 0.5rem;
+}
+
+.podium-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 3px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+}
+
+.podium-gold .podium-avatar {
+  width: 76px;
+  height: 76px;
+  border-color: #eab308;
+  box-shadow: 0 0 24px rgba(234, 179, 8, 0.35);
+  font-size: 1.4rem;
+}
+
+.podium-silver .podium-avatar {
+  border-color: #94a3b8;
+  box-shadow: 0 0 16px rgba(148, 163, 184, 0.25);
+}
+
+.podium-bronze .podium-avatar {
+  border-color: #d97706;
+  box-shadow: 0 0 16px rgba(217, 119, 6, 0.25);
+}
+
+.podium-medal {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #fff;
+  border: 2px solid var(--bg-primary);
+}
+
+.podium-medal.gold { background: #eab308; color: #000; }
+.podium-medal.silver { background: #94a3b8; }
+.podium-medal.bronze { background: #d97706; }
+
+.podium-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.podium-nums {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.podium-points {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-top: 0.2rem;
+  margin-bottom: 0.6rem;
+}
+
+.podium-pedestal {
+  width: 100%;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+  font-weight: 900;
+  border: 1px solid var(--border-color);
+  border-bottom: none;
+}
+
+.pedestal-gold {
+  height: 95px;
+  background: linear-gradient(180deg, rgba(234, 179, 8, 0.25) 0%, rgba(234, 179, 8, 0.05) 100%);
+  border-color: rgba(234, 179, 8, 0.4);
+  color: #eab308;
+}
+
+.pedestal-silver {
+  height: 70px;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.25) 0%, rgba(148, 163, 184, 0.05) 100%);
+  border-color: rgba(148, 163, 184, 0.4);
+  color: #94a3b8;
+}
+
+.pedestal-bronze {
+  height: 52px;
+  background: linear-gradient(180deg, rgba(217, 119, 6, 0.25) 0%, rgba(217, 119, 6, 0.05) 100%);
+  border-color: rgba(217, 119, 6, 0.4);
+  color: #d97706;
+}
+
+/* TABLEAU COMPLET */
+.leaderboard-table-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+}
+
+.leaderboard-table-header {
+  padding: 1.1rem 1.4rem;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.leaderboard-table-header h3 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leaderboard-table th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.8rem 1.2rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.leaderboard-table td {
+  padding: 0.85rem 1.2rem;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 0.9rem;
+  vertical-align: middle;
+}
+
+.leaderboard-row {
+  transition: background-color 0.15s ease;
+}
+
+.leaderboard-row:hover {
+  background: var(--bg-card-hover);
+}
+
+.leaderboard-row.is-current-user {
+  background: var(--accent-transparent);
+  border-left: 3px solid var(--accent-color);
+}
+
+.lb-user-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.lb-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.lb-user-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.lb-user-name {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.lb-you-badge {
+  font-size: 0.65rem;
+  font-weight: 800;
+  background: var(--accent-color);
+  color: #fff;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+.lb-buque-tag {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.lb-nums-pill {
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+
+.lb-bets-count {
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.lb-points-val {
+  font-weight: 800;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+/* RANGS STYLISES */
+.rank-badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 0.85rem;
+}
+
+.rank-gold { background: rgba(234, 179, 8, 0.2); color: #eab308; }
+.rank-silver { background: rgba(148, 163, 184, 0.2); color: #94a3b8; }
+.rank-bronze { background: rgba(217, 119, 6, 0.2); color: #d97706; }
+
+.rank-badge-top10 {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-weight: 700;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+}
+
+.rank-num {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.highlight-pulse {
+  animation: pulseGlow 1.2s ease-in-out 2;
+}
+
+@keyframes pulseGlow {
+  0% { background-color: var(--accent-transparent); }
+  50% { background-color: rgba(128, 0, 0, 0.3); }
+  100% { background-color: var(--accent-transparent); }
+}
+
+@media (max-width: 600px) {
+  .podium-section {
+    gap: 0.4rem;
+  }
+  .podium-avatar {
+    width: 48px;
+    height: 48px;
+    font-size: 1rem;
+  }
+  .podium-gold .podium-avatar {
+    width: 58px;
+    height: 58px;
+    font-size: 1.1rem;
+  }
+  .podium-name {
+    font-size: 0.82rem;
+  }
+  .podium-points {
+    font-size: 0.78rem;
+  }
+  .pedestal-gold { height: 70px; font-size: 1.2rem; }
+  .pedestal-silver { height: 50px; font-size: 1.1rem; }
+  .pedestal-bronze { height: 38px; font-size: 1rem; }
+
+  .leaderboard-table th, .leaderboard-table td {
+    padding: 0.65rem 0.6rem;
+  }
+  .my-rank-banner {
+    padding: 0.8rem 1rem;
+  }
+}
+

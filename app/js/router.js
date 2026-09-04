@@ -11,6 +11,7 @@ import { renderPortfolio, attachPortfolioEvents } from './views/portfolio.js';
 import { renderProfile, attachProfileEvents } from './views/profile.js';
 import { renderAdmin, attachAdminEvents } from './views/admin.js';
 import { renderProposals, attachProposalsEvents } from './views/proposals.js';
+import { renderLeaderboard, attachLeaderboardEvents } from './views/leaderboard.js';
 import { renderLogin, renderRegister, attachAuthEvents } from './views/auth.js';
 
 export const router = {
@@ -89,6 +90,15 @@ export const router = {
         } else if (segments[0] === 'proposals') {
             state.currentRoute = 'proposals';
             state.routeParams = {};
+        } else if (segments[0] === 'leaderboard') {
+            state.currentRoute = 'leaderboard';
+            state.routeParams = {};
+            api.get('/api/leaderboard').then(lb => {
+                state.leaderboard = lb || [];
+                if (state.currentRoute === 'leaderboard') {
+                    this.renderCurrentView();
+                }
+            }).catch(() => {});
         } else if (segments[0] === 'login') {
             state.currentRoute = 'login';
             state.routeParams = {};
@@ -120,6 +130,10 @@ export const router = {
             case 'portfolio':
                 container.innerHTML = renderPortfolio();
                 attachPortfolioEvents();
+                break;
+            case 'leaderboard':
+                container.innerHTML = renderLeaderboard();
+                attachLeaderboardEvents();
                 break;
             case 'profile':
                 container.innerHTML = renderProfile();

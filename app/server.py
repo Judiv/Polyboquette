@@ -1409,8 +1409,40 @@ def admin_export_csv():
 def get_leaderboard():
     db = load_db()
     active = [u for u in db["users"].values() if u.get("status") == "active"]
-    ranked = sorted(active, key=lambda u: max(0, int(u.get("points", 0))), reverse=True)[:25]
-    return jsonify([{"id": u["id"], "name": u["name"], "nums": u.get("nums", ""), "points": u.get("points", 0)} for u in ranked])
+    
+    # Statistiques des paris par joueur
+    user_bets = {}
+    user_won = {}
+    for m in db.get("markets", []):
+        is_res = m.get("status") == "resolved"
+        win_opt = m.get("winningOptionId") or m.get("resolvedOptionId")
+        for b in m.get("bets", []):
+            uid = str(b.get("userId"))
+            user_bets[uid] = user_bets.get(uid, 0) + 1
+            if is_res and win_opt and b.get("optId") == win_opt:
+                user_won[uid] = user_won.get(uid, 0) + 1
+
+    ranked = sorted(active, key=lambda u: max(0, int(u.get("points", 0))), reverse=True)
+    
+    result = []
+    for idx, u in enumerate(ranked, 1):
+        uid = str(u["id"])
+        # Compatibilité d'identifiants
+        b_count = user_bets.get(uid, 0) + user_bets.get(str(u.get("username")), 0) + user_bets.get(str(u.get("nums")), 0)
+        w_count = user_won.get(uid, 0) + user_won.get(str(u.get("username")), 0) + user_won.get(str(u.get("nums")), 0)
+        
+        result.append({
+            "rank": idx,
+            "id": u["id"],
+            "name": u["name"],
+            "nums": u.get("nums", ""),
+            "points": u.get("points", 0),
+            "betsCount": b_count,
+            "wonBetsCount": w_count,
+            "buque": u.get("buque", ""),
+            "proms": u.get("proms", "")
+        })
+    return jsonify(result)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # LANCEMENT SERVEUR

@@ -43,6 +43,12 @@ export const navbar = {
             if (logoutBtn) logoutBtn.classList.remove('hidden');
 
             // Desktop Buttons (hidden on mobile via .hide-mobile)
+            const lbBtn = document.createElement('button');
+            lbBtn.className = 'btn-outline nav-custom-btn hide-mobile';
+            lbBtn.innerHTML = '<i class="fa-solid fa-trophy" style="color:#eab308;"></i> <span>Classement</span>';
+            lbBtn.onclick = () => router.navigate('/leaderboard');
+            navActions.insertBefore(lbBtn, authActions);
+
             const propBtn = document.createElement('button');
             propBtn.className = 'btn-outline nav-custom-btn hide-mobile';
             propBtn.innerHTML = '<i class="fa-solid fa-lightbulb"></i> <span>Proposer</span>';
@@ -88,6 +94,10 @@ export const navbar = {
                 <i class="fa-solid fa-fire"></i>
                 <span>Marchés</span>
             </a>
+            <a href="#/leaderboard" class="bottom-nav-item ${current === 'leaderboard' ? 'active' : ''}">
+                <i class="fa-solid fa-trophy"></i>
+                <span>Top</span>
+            </a>
             ${user ? `
                 <a href="#/portfolio" class="bottom-nav-item ${current === 'portfolio' ? 'active' : ''}">
                     <i class="fa-solid fa-wallet"></i>
@@ -101,12 +111,6 @@ export const navbar = {
                     <i class="fa-solid fa-user"></i>
                     <span>Profil</span>
                 </a>
-                ${user.role === 'admin' ? `
-                    <a href="#/admin" class="bottom-nav-item ${current === 'admin' ? 'active' : ''}">
-                        <i class="fa-solid fa-shield-halved"></i>
-                        <span>Admin</span>
-                    </a>
-                ` : ''}
             ` : `
                 <a href="#/login" class="bottom-nav-item ${current === 'login' ? 'active' : ''}">
                     <i class="fa-solid fa-right-to-bracket"></i>
